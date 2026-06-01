@@ -9,8 +9,15 @@ const secret = process.env.JWT_SECRET
 router.post('/signup', async (req, res) => {
   const { name, email, username, password } = req.body
   const hashedPassword = await bcrypt.hash(password, 10)
-  const user = await User.create({ name, email, username, password: hashedPassword })
-  res.json({ message: 'Signup Successful',name, email, username })
+   try {
+   const user = await User.create({ name, email, username, password: hashedPassword }) 
+    res.json({ message: 'Signup Successful',name, email, username })
+
+}
+    catch (err) {  
+      res.status(409).json({ message: 'Duplicate email or username' })
+    }
+  
 })
 
 router.post('/login', async (req, res) => {
