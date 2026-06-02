@@ -16,10 +16,10 @@ router.post('/:roomId/join', authMiddleware, async (req, res) => {
        const updatedRoom = await Room.findByIdAndUpdate(
         roomId,
         { $addToSet: { players: userId } },
-        { new: true }
-        )
+        { returnDocument: 'after' }
+       )
         res.json({ message: 'Joined Successfully', room: updatedRoom })
-
+       
     }
     catch(err){
         res.status(404).json({error : 'Room Not Found'})
