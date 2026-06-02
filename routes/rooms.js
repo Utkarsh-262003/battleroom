@@ -3,6 +3,29 @@ const router  = express.Router()
 const authMiddleware = require('../middleware/auth.js')
 const Room = require('../models/Room')
   
+router.post('/:roomId/join', authMiddleware, async (req, res) => { 
+    const roomId = req.params.roomId
+    const userId = req.user._id
+    
+    try{
+        const rooms = await Room.findById(roomId)
+        if(rooms.status != 'waiting'){
+            res.status(403).json({error : 'Not Authozised to join the room'})
+            return
+        }
+       const updatedRoom = await Room.findByIdAndUpdate(
+        roomId,
+        { $addToSet: { players: userId } },
+        { new: true }
+        )
+        res.json({ message: 'Joined Successfully', room: updatedRoom })
+
+    }
+    catch(err){
+        res.status(404).json({error : 'Room Not Found'})
+    }
+    }) 
+
 router.get('/', authMiddleware, async (req, res) => { 
     try{
         const rooms = await Room.find()
@@ -24,3 +47,7 @@ catch(err){
 }
 })
 module.exports = router
+
+
+
+
