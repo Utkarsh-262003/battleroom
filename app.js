@@ -7,6 +7,7 @@ mongoose.connect(process.env.MONGO_URI)
 const express = require('express') 
 const jwt = require('jsonwebtoken')
 const app = express() 
+const Room = require('./models/Room')
 app.use(express.json()) 
   
 app.use((req, res, next) => { 
@@ -68,6 +69,17 @@ io.on('connection', (socket) => {
             io.to(currentRoom).emit('player-left', { socketId: socket.id })
             console.log(`user disconnected from ${currentRoom}:`, socket.id)
         }
+    })
+    socket.on('start-game', async()=>{
+      const pusher = socket.data.user._id
+      const room = await Room.findById(currentRoom)
+      const host = room.host
+      if(pusher === host.toString()){
+        io.to(currentRoom).emit('game-started', { message: 'Game is starting' })
+      }
+      else{
+       socket.emit('error', { message: 'Only the host can start the game' })
+      }
     })
 })
 
