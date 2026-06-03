@@ -1,23 +1,36 @@
 <!DOCTYPE html>
 <html>
 <body>
+  <button onclick="startGame()">Start Game</button>
   <script src="/socket.io/socket.io.js"></script>
   <script>
-   const socket = io({
-    auth: {
-        token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2YTIwNmU4Yjg3YWRlY2ZhOWZkOTEzOGYiLCJ1c2VybmFtZSI6ImJhdHRsZXJvb21fdGVzdCIsImlhdCI6MTc4MDUxMDM3NywiZXhwIjoxNzgxMTE1MTc3fQ.J0PjHyPRqWWAlHZnsBB70M2ml2WigiWE1S3e-0jWwFk'
-    }
+    const socket = io({
+      auth: {
+        token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2YTIwNmU4Yjg3YWRlY2ZhOWZkOTEzOGYiLCJ1c2VybmFtZSI6ImJhdHRsZXJvb21fdGVzdCIsImlhdCI6MTc4MDUxMjE0OCwiZXhwIjoxNzgxMTE2OTQ4fQ.pUQ2t_RS4EodLWa3zebUYDzOh8cQHieBmUbQJhzPG-8'
+        
+      }
     })
+
     socket.on('connect', () => {
       console.log('connected:', socket.id)
-      
-      // simulate joining a room
-      socket.emit('join-room', { roomId: 'room1', username: 'Ani' })
+      socket.emit('join-room', { roomId: '6a2075d5d0f06a64666fbb0a', username: 'Ani' })
     })
 
     socket.on('player-joined', ({ username }) => {
       console.log(`${username} joined the room`)
     })
+
+    socket.on('game-started', (data) => {
+      console.log('GAME STARTED:', data)
+    })
+
+    socket.on('error', (data) => {
+      console.log('ERROR:', data.message)
+    })
+
+    function startGame() {
+      socket.emit('start-game')
+    }
   </script>
 </body>
 </html>

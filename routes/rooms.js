@@ -40,7 +40,7 @@ router.post('/create', authMiddleware, async(req, res) => {
         const name = req.body.name
         const host = req.user._id
        const room = await Room.create({ name, host}) 
-        res.json({ message: 'Room Created Successfully' })
+       res.json({ message: 'Room Created Successfully', roomId: room._id })
 }
 catch(err){
     res.status(500).json({error : 'Internal Server Error'})
