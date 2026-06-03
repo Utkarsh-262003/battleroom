@@ -5,6 +5,7 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected'))
   .catch((err) => console.error('Connection failed:', err))
 const express = require('express') 
+const jwt = require('jsonwebtoken')
 const app = express() 
 app.use(express.json()) 
   
@@ -42,6 +43,18 @@ const server = http.createServer(app)
 const { Server } = require('socket.io')
 const io = new Server(server)
 io.on('connection', (socket) => {
+     try {
+        const token = socket.handshake.auth.token
+        const decoded = jwt.verify(token, process.env.JWT_SECRET)
+        socket.data.user = decoded
+        console.log('socket authenticated:', socket.data.user.username)
+    } catch (err) {
+        console.log('invalid token, disconnecting')
+        socket.disconnect()
+        return
+    }
+
+    console.log('a user connected:', socket.id)
     let currentRoom = null  // outer scope — both handlers can see this
 
     socket.on('join-room', ({ roomId, username }) => {
