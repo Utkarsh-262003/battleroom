@@ -41,14 +41,21 @@ const PORT = process.env.PORT
 const server = http.createServer(app)
 const { Server } = require('socket.io')
 const io = new Server(server)
-io.on('connection', (socket) => {  //in simpole terms each new connection gets its own pipe we are naming that pipe socket
-    console.log('a user connected:', socket.id) //that pipe gets a unique id
+io.on('connection', (socket) => {
+    let currentRoom = null  // outer scope — both handlers can see this
 
-    socket.on('join-room', ({ roomId, username }) => { //when a pipe connects like it join a room then , we have roomId and username as input , roomid in which room the socket is joining and username of that guy
+    socket.on('join-room', ({ roomId, username }) => {
+        currentRoom = roomId  // set it when player joins
+        socket.join(currentRoom)
+        io.to(currentRoom).emit('player-joined', { username })
+    })
 
-        socket.join(roomId) //the socket meaning that connection has now joined the room and like from now on all events apply on this person too
-        console.log(`${username} joined room ${roomId}`) //just a console statement
-        io.to(roomId).emit('player-joined', { username }) //everyone else gets a message that is player has joined
+    socket.on('disconnect', () => {
+        if (currentRoom) {
+            io.to(currentRoom).emit('player-left', { socketId: socket.id })
+            console.log(`user disconnected from ${currentRoom}:`, socket.id)
+        }
     })
 })
+
 server.listen(PORT, ()=>console.log(`Server on port ${PORT}`))
