@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io()
+
+    socket.on('connect', () => {
+      console.log('connected:', socket.id)
+      
+      // simulate joining a room
+      socket.emit('join-room', { roomId: 'room1', username: 'Ani' })
+    })
+
+    socket.on('player-joined', ({ username }) => {
+      console.log(`${username} joined the room`)
+    })
+  </script>
+</body>
+</html>
