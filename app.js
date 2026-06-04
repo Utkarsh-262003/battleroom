@@ -9,6 +9,35 @@ const jwt = require('jsonwebtoken')
 const app = express() 
 const Room = require('./models/Room')
 app.use(express.json()) 
+const questions = [ 
+  {
+  question: "What is the capital of India?",
+  options: ["Paris", "London", "New Delhi", "Madrid"],
+  correctOption: 2
+},
+{
+  question: "Who is the richest person in the world?",
+  options: ["Jeff Bezos", "Elon Musk", "Dario Amodei", "Donald Trump"],
+  correctOption: 1
+},
+{
+  question: "Who is the main female protagonist in Solo-Leveling?",
+  options: ["Cha Hae-In", "Lee Joo-Hee", "Radiru Esil", "Park Hee-Jin"],
+  correctOption: 0
+},
+{
+  question: "How many continents are there in the world?",
+  options: ["5", "7", "6", "8"],
+  correctOption: 1
+},
+{
+  question: "Which Country has the highest GDP(Nominal)?",
+  options: ["Germany", "Japan", "China", "USA"],
+  correctOption: 3
+}
+]
+  const gameState = {}
+
   
 app.use((req, res, next) => { 
   console.log(`${req.method} ${req.url}`) 
@@ -37,6 +66,27 @@ app.use((err, req, res, next) => {
   console.error(err.stack) 
   res.status(500).json({ error: err.message }) 
 }) 
+function sendQuestion(roomId){
+        const state = gameState[roomId]
+        const question = questions[state.currentQuestion]
+        const { correctOption, ...safeQuestion } = question 
+        io.to(roomId).emit('new-question', safeQuestion)
+        state.timer = setTimeout(()=>{
+          console.log("time-up")
+          state.currentQuestion++
+          if(state.currentQuestion === questions.length){
+              io.to(roomId).emit('game-over', { scores: state.scores })
+              delete gameState[roomId]           
+          }
+          else{
+            sendQuestion(roomId)
+          }
+        }
+        ,15000)
+
+        
+
+}
   
 const PORT = process.env.PORT 
 
@@ -72,14 +122,39 @@ io.on('connection', (socket) => {
     })
     socket.on('start-game', async()=>{
       const pusher = socket.data.user._id
-      const room = await Room.findById(currentRoom)
+      let room
+      try{
+       room = await Room.findById(currentRoom)
+      }
+      catch(err){
+        socket.emit('error', { message: 'Internal server error' })
+          return    
+          }
       const host = room.host
-      if(pusher === host.toString()){
-        io.to(currentRoom).emit('game-started', { message: 'Game is starting' })
+      if (pusher === host.toString()) {
+        gameState[currentRoom] = {
+          currentQuestion: 0,
+          scores: {},
+          timer: null
+        }
+        sendQuestion(currentRoom)
       }
       else{
        socket.emit('error', { message: 'Only the host can start the game' })
       }
+    })
+     socket.on('submit-answer', ({ answer }) => {
+      const state = gameState[currentRoom]
+      const question = questions[state.currentQuestion]
+      const username = socket.data.user.username
+      if(answer ==question.correctOption){
+        state.scores[username] = (state.scores[username] || 0) + 10
+        socket.emit('answer-result', {correct: true, scores: state.scores })
+
+      }
+      else {
+        socket.emit('answer-result', { correct: false, scores: state.scores })
+          }
     })
 })
 
