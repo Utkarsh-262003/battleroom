@@ -8,6 +8,8 @@ const express = require('express')
 const jwt = require('jsonwebtoken')
 const app = express() 
 const Room = require('./models/Room')
+const GameResult = require('./models/GameResult')
+
 app.use(express.json()) 
 const questions = [ 
   {
@@ -68,13 +70,19 @@ app.use((err, req, res, next) => {
 }) 
 function sendQuestion(roomId){
         const state = gameState[roomId]
+        state.answered = new Set()
         const question = questions[state.currentQuestion]
         const { correctOption, ...safeQuestion } = question 
         io.to(roomId).emit('new-question', safeQuestion)
-        state.timer = setTimeout(()=>{
+        state.timer = setTimeout(async()=>{
           console.log("time-up")
           state.currentQuestion++
           if(state.currentQuestion === questions.length){
+              const room = await Room.findById(roomId)
+              Object.entries(state.scores).forEach(([username, score]) => {
+                const userId = state.playerIds[username]
+                GameResult.create({ username, userId, score, roomName: room.name })
+              })
               io.to(roomId).emit('game-over', { scores: state.scores })
               delete gameState[roomId]           
           }
@@ -115,14 +123,24 @@ io.on('connection', (socket) => {
     })
 
     socket.on('disconnect', () => {
-        if (currentRoom) {
-            io.to(currentRoom).emit('player-left', { socketId: socket.id })
-            console.log(`user disconnected from ${currentRoom}:`, socket.id)
+    if (currentRoom) {
+        io.to(currentRoom).emit('player-left', { socketId: socket.id })
+        console.log(`user disconnected from ${currentRoom}:`, socket.id)
+
+        const room = io.sockets.adapter.rooms.get(currentRoom)
+        const roomSize = room ? room.size : 0
+
+        if (roomSize === 0 && gameState[currentRoom]) {
+            clearTimeout(gameState[currentRoom].timer)
+            delete gameState[currentRoom] 
+            console.log(`Room ${currentRoom} is empty. Game timer cleared.`)
         }
-    })
+    }
+})
     socket.on('start-game', async()=>{
       const pusher = socket.data.user._id
       let room
+      
       try{
        room = await Room.findById(currentRoom)
       }
@@ -135,7 +153,9 @@ io.on('connection', (socket) => {
         gameState[currentRoom] = {
           currentQuestion: 0,
           scores: {},
-          timer: null
+          timer: null,
+          answered: new Set(),
+          playerIds: {}
         }
         sendQuestion(currentRoom)
       }
@@ -144,18 +164,22 @@ io.on('connection', (socket) => {
       }
     })
      socket.on('submit-answer', ({ answer }) => {
-      const state = gameState[currentRoom]
-      const question = questions[state.currentQuestion]
-      const username = socket.data.user.username
-      if(answer ==question.correctOption){
-        state.scores[username] = (state.scores[username] || 0) + 10
-        socket.emit('answer-result', {correct: true, scores: state.scores })
+    if (!gameState[currentRoom]) return 
+    const state = gameState[currentRoom]
+    const username = socket.data.user.username
+    state.playerIds[username] = socket.data.user._id
 
-      }
-      else {
+    if (state.answered.has(username)) return  
+    state.answered.add(username) 
+    const question = questions[state.currentQuestion]
+
+    if (answer == question.correctOption) {
+        state.scores[username] = (state.scores[username] || 0) + 10
+        socket.emit('answer-result', { correct: true, scores: state.scores })
+    } else {
         socket.emit('answer-result', { correct: false, scores: state.scores })
-          }
-    })
+    }
+})
 })
 
 server.listen(PORT, ()=>console.log(`Server on port ${PORT}`))

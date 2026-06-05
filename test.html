@@ -1,36 +1,752 @@
 <!DOCTYPE html>
-<html>
-<body>
-  <button onclick="startGame()">Start Game</button>
-  <script src="/socket.io/socket.io.js"></script>
-  <script>
-    const socket = io({
-      auth: {
-        token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2YTIwNmU4Yjg3YWRlY2ZhOWZkOTEzOGYiLCJ1c2VybmFtZSI6ImJhdHRsZXJvb21fdGVzdCIsImlhdCI6MTc4MDUxMjE0OCwiZXhwIjoxNzgxMTE2OTQ4fQ.pUQ2t_RS4EodLWa3zebUYDzOh8cQHieBmUbQJhzPG-8'
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BattleRoom</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Outfit:wght@400;600;800&display=swap');
 
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e8;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+
+    .container { width: 100%; max-width: 520px; }
+
+    h1 {
+      font-size: 1.8rem;
+      font-weight: 800;
+      text-align: center;
+      margin-bottom: 24px;
+      background: linear-gradient(135deg, #60a5fa, #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.5px;
+    }
+
+    /* ── Panels ── */
+    .panel {
+      background: #14141f;
+      border: 1px solid #1e1e30;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 16px;
+      display: none;
+    }
+
+    .panel.active { display: block; }
+
+    .panel h2 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 16px;
+      color: #a78bfa;
+    }
+
+    /* ── Forms ── */
+    label {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #888;
+      margin-bottom: 6px;
+    }
+
+    input {
+      width: 100%;
+      padding: 10px 14px;
+      background: #0a0a0f;
+      border: 1px solid #2a2a40;
+      border-radius: 8px;
+      color: #e0e0e8;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      margin-bottom: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input:focus { border-color: #60a5fa; }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      font-family: 'Outfit', sans-serif;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.2s;
+    }
+
+    .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-blue { background: #3b82f6; color: #fff; }
+    .btn-green { background: #22c55e; color: #fff; }
+    .btn-amber { background: #f59e0b; color: #000; }
+    .btn-red { background: #ef4444; color: #fff; }
+    .btn-outline { background: transparent; border: 1px solid #2a2a40; color: #888; }
+    .btn-outline:hover { border-color: #60a5fa; color: #e0e0e8; }
+
+    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    .link-btn {
+      background: none;
+      border: none;
+      color: #60a5fa;
+      font-family: 'Outfit', sans-serif;
+      font-size: 0.85rem;
+      cursor: pointer;
+      margin-top: 12px;
+    }
+
+    .link-btn:hover { text-decoration: underline; }
+
+    .error-msg {
+      background: #200a0a;
+      border: 1px solid #ef444433;
+      color: #ef4444;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      margin-bottom: 14px;
+      display: none;
+    }
+
+    .error-msg.visible { display: block; }
+
+    .success-msg {
+      background: #0a2015;
+      border: 1px solid #22c55e33;
+      color: #22c55e;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      margin-bottom: 14px;
+      display: none;
+    }
+
+    .success-msg.visible { display: block; }
+
+    /* ── Status ── */
+    .status {
+      text-align: center;
+      padding: 10px;
+      font-size: 0.8rem;
+      color: #666;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .status.connected { color: #22c55e; }
+    .status.error { color: #ef4444; }
+
+    /* ── Log ── */
+    .log {
+      background: #14141f;
+      border: 1px solid #1e1e30;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      max-height: 120px;
+      overflow-y: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      line-height: 1.6;
+      color: #888;
+      display: none;
+    }
+
+    .log.active { display: block; }
+    .log .join { color: #22c55e; }
+    .log .left { color: #ef4444; }
+
+    /* ── User Bar ── */
+    .user-bar {
+      display: none;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 16px;
+      background: #14141f;
+      border: 1px solid #1e1e30;
+      border-radius: 10px;
+      margin-bottom: 16px;
+      font-size: 0.85rem;
+    }
+
+    .user-bar.active { display: flex; }
+    .user-bar .greeting { color: #a78bfa; font-weight: 600; }
+
+    /* ── Room List ── */
+    .room-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      background: #0a0a0f;
+      border: 1px solid #1e1e30;
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+
+    .room-item .room-name { font-weight: 600; font-size: 0.9rem; }
+
+    .room-item .room-meta {
+      font-size: 0.72rem;
+      color: #666;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .room-status {
+      font-size: 0.7rem;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .room-status.waiting { background: #22c55e22; color: #22c55e; }
+    .room-status.in-progress { background: #f59e0b22; color: #f59e0b; }
+    .room-status.finished { background: #ef444422; color: #ef4444; }
+
+    .empty-state {
+      text-align: center;
+      color: #555;
+      font-size: 0.85rem;
+      padding: 20px;
+    }
+
+    /* ── Question Card ── */
+    .question-card {
+      background: #14141f;
+      border: 1px solid #1e1e30;
+      border-radius: 12px;
+      padding: 28px 24px;
+      margin-bottom: 16px;
+      display: none;
+    }
+
+    .question-card.active { display: block; }
+
+    .timer-bar {
+      height: 4px;
+      background: #1e1e30;
+      border-radius: 2px;
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+
+    .timer-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #3b82f6, #a78bfa);
+      border-radius: 2px;
+      width: 100%;
+      transition: width 15s linear;
+    }
+
+    .question-text {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 20px;
+      line-height: 1.4;
+    }
+
+    .options { display: flex; flex-direction: column; gap: 10px; }
+
+    .option-btn {
+      width: 100%;
+      padding: 14px 18px;
+      background: #0a0a0f;
+      border: 1px solid #2a2a40;
+      border-radius: 8px;
+      color: #e0e0e8;
+      font-family: 'Outfit', sans-serif;
+      font-size: 0.95rem;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .option-btn:hover { border-color: #60a5fa; background: #1a1a2e; }
+    .option-btn:disabled { cursor: default; }
+
+    .feedback {
+      margin-top: 16px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      display: none;
+    }
+
+    .feedback.correct { display: block; background: #0a2015; color: #22c55e; border: 1px solid #22c55e33; }
+    .feedback.wrong { display: block; background: #200a0a; color: #ef4444; border: 1px solid #ef444433; }
+
+    /* ── Scoreboard ── */
+    .scoreboard {
+      background: #14141f;
+      border: 1px solid #1e1e30;
+      border-radius: 12px;
+      padding: 20px 24px;
+      display: none;
+    }
+
+    .scoreboard.active { display: block; }
+
+    .scoreboard h2 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #a78bfa;
+    }
+
+    .score-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #1e1e30;
+      font-size: 0.9rem;
+    }
+
+    .score-row:last-child { border: none; }
+    .score-row .name { color: #e0e0e8; }
+    .score-row .pts { color: #60a5fa; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+
+    /* ── Game Over ── */
+    .game-over {
+      text-align: center;
+      padding: 40px 24px;
+      display: none;
+    }
+
+    .game-over.active { display: block; }
+    .game-over h2 { font-size: 1.4rem; margin-bottom: 20px; color: #f59e0b; }
+  </style>
+</head>
+
+<body>
+<div class="container">
+  <h1>⚔ BattleRoom</h1>
+
+  <!-- User Bar (shown after login) -->
+  <div class="user-bar" id="userBar">
+    <span class="greeting" id="greeting"></span>
+    <button class="btn btn-outline" onclick="logout()" style="padding:6px 14px;font-size:0.78rem;">Logout</button>
+  </div>
+
+  <!-- ════════ AUTH PANELS ════════ -->
+
+  <!-- Login -->
+  <div class="panel active" id="loginPanel">
+    <h2>Login</h2>
+    <div class="error-msg" id="loginError"></div>
+    <label>Email</label>
+    <input type="email" id="loginEmail" placeholder="you@example.com">
+    <label>Password</label>
+    <input type="password" id="loginPassword" placeholder="••••••••">
+    <button class="btn btn-blue" onclick="login()" style="width:100%">Login</button>
+    <button class="link-btn" onclick="showPanel('signupPanel')">Don't have an account? Sign up</button>
+  </div>
+
+  <!-- Signup -->
+  <div class="panel" id="signupPanel">
+    <h2>Sign Up</h2>
+    <div class="error-msg" id="signupError"></div>
+    <div class="success-msg" id="signupSuccess"></div>
+    <label>Name</label>
+    <input type="text" id="signupName" placeholder="John Doe">
+    <label>Email</label>
+    <input type="email" id="signupEmail" placeholder="you@example.com">
+    <label>Username</label>
+    <input type="text" id="signupUsername" placeholder="johndoe">
+    <label>Password</label>
+    <input type="password" id="signupPassword" placeholder="••••••••">
+    <button class="btn btn-green" onclick="signup()" style="width:100%">Create Account</button>
+    <button class="link-btn" onclick="showPanel('loginPanel')">Already have an account? Login</button>
+  </div>
+
+  <!-- ════════ LOBBY PANEL ════════ -->
+
+  <div class="panel" id="lobbyPanel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h2 style="margin:0">Rooms</h2>
+      <div class="btn-row">
+        <button class="btn btn-outline" onclick="fetchRooms()" style="padding:6px 14px;font-size:0.78rem;">Refresh</button>
+        <button class="btn btn-green" onclick="showPanel('createRoomPanel')" style="padding:6px 14px;font-size:0.78rem;">+ New Room</button>
+      </div>
+    </div>
+    <div id="roomList"><div class="empty-state">Loading rooms...</div></div>
+  </div>
+
+  <!-- Create Room -->
+  <div class="panel" id="createRoomPanel">
+    <h2>Create Room</h2>
+    <div class="error-msg" id="createRoomError"></div>
+    <label>Room Name</label>
+    <input type="text" id="createRoomName" placeholder="Epic Quiz Battle">
+    <div class="btn-row">
+      <button class="btn btn-green" onclick="createRoom()">Create</button>
+      <button class="btn btn-outline" onclick="showPanel('lobbyPanel')">Cancel</button>
+    </div>
+  </div>
+
+  <!-- ════════ GAME PANELS ════════ -->
+
+  <!-- Status -->
+  <div class="status" id="status"></div>
+
+  <!-- Event Log -->
+  <div class="log" id="log"></div>
+
+  <!-- Waiting Room -->
+  <div class="panel" id="waitingPanel">
+    <h2>Waiting for players...</h2>
+    <p style="color:#888;font-size:0.85rem;margin-bottom:16px;" id="waitingInfo"></p>
+    <div class="btn-row">
+      <button class="btn btn-amber" id="startBtn" onclick="startGame()">Start Game</button>
+      <button class="btn btn-outline" onclick="leaveRoom()">Leave</button>
+    </div>
+  </div>
+
+  <!-- Question -->
+  <div class="question-card" id="questionCard">
+    <div class="timer-bar"><div class="timer-fill" id="timerFill"></div></div>
+    <div class="question-text" id="questionText"></div>
+    <div class="options" id="optionsBox"></div>
+    <div class="feedback" id="feedback"></div>
+  </div>
+
+  <!-- Live Scores -->
+  <div class="scoreboard" id="scoreboard">
+    <h2>Scores</h2>
+    <div id="scoreRows"></div>
+  </div>
+
+  <!-- Game Over -->
+  <div class="game-over" id="gameOver">
+    <h2>Game Over</h2>
+    <div id="finalScores"></div>
+    <button class="btn btn-blue" onclick="backToLobby()" style="margin-top:20px;">Back to Lobby</button>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  // ══════════════════════════════
+  //  STATE
+  // ══════════════════════════════
+  let token = null
+  let currentUser = null   // { _id, username }
+  let socket = null
+  let currentRoomId = null
+
+  const $ = id => document.getElementById(id)
+
+  // ══════════════════════════════
+  //  PANEL MANAGEMENT
+  // ══════════════════════════════
+  function showPanel(id) {
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'))
+    $(id).classList.add('active')
+  }
+
+  function showError(elId, msg) {
+    const el = $(elId)
+    el.textContent = msg
+    el.classList.add('visible')
+    setTimeout(() => el.classList.remove('visible'), 4000)
+  }
+
+  function showSuccess(elId, msg) {
+    const el = $(elId)
+    el.textContent = msg
+    el.classList.add('visible')
+    setTimeout(() => el.classList.remove('visible'), 4000)
+  }
+
+  // ══════════════════════════════
+  //  AUTH
+  // ══════════════════════════════
+  async function signup() {
+    const name     = $('signupName').value.trim()
+    const email    = $('signupEmail').value.trim()
+    const username = $('signupUsername').value.trim()
+    const password = $('signupPassword').value
+
+    if (!name || !email || !username || !password) return showError('signupError', 'All fields required')
+
+    try {
+      const res = await fetch('/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, username, password })
+      })
+      const data = await res.json()
+
+      if (!res.ok) return showError('signupError', data.message || 'Signup failed')
+
+      showSuccess('signupSuccess', 'Account created! Redirecting to login...')
+      setTimeout(() => showPanel('loginPanel'), 1500)
+    } catch (err) {
+      showError('signupError', 'Network error')
+    }
+  }
+
+  async function login() {
+    const email    = $('loginEmail').value.trim()
+    const password = $('loginPassword').value
+
+    if (!email || !password) return showError('loginError', 'All fields required')
+
+    try {
+      const res = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      })
+      const data = await res.json()
+
+      if (!res.ok) return showError('loginError', data.message || 'Login failed')
+
+      // decode username from JWT payload (base64)
+      token = data.token
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      currentUser = { _id: payload._id, username: payload.username }
+
+      // update UI
+      $('greeting').textContent = `Hey, ${currentUser.username}`
+      $('userBar').classList.add('active')
+      showPanel('lobbyPanel')
+      fetchRooms()
+    } catch (err) {
+      showError('loginError', 'Network error')
+    }
+  }
+
+  function logout() {
+    token = null
+    currentUser = null
+    if (socket) { socket.disconnect(); socket = null; }
+    $('userBar').classList.remove('active')
+    $('log').classList.remove('active')
+    $('log').innerHTML = ''
+    $('status').textContent = ''
+    $('scoreboard').classList.remove('active')
+    $('questionCard').classList.remove('active')
+    $('gameOver').classList.remove('active')
+    showPanel('loginPanel')
+  }
+
+  // ══════════════════════════════
+  //  ROOMS (REST)
+  // ══════════════════════════════
+  async function fetchRooms() {
+    try {
+      const res = await fetch('/rooms', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      const rooms = data.rooms || []
+
+      const list = $('roomList')
+      if (rooms.length === 0) {
+        list.innerHTML = '<div class="empty-state">No rooms yet. Create one!</div>'
+        return
       }
-    })
+
+      list.innerHTML = rooms.map(r => `
+        <div class="room-item">
+          <div>
+            <div class="room-name">${r.name}</div>
+            <div class="room-meta">${r.players.length} player${r.players.length !== 1 ? 's' : ''} · ${r._id.slice(-6)}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span class="room-status ${r.status}">${r.status}</span>
+            ${r.status === 'waiting' ? `<button class="btn btn-blue" style="padding:6px 14px;font-size:0.78rem;" onclick="joinRoom('${r._id}', '${r.name}')">Join</button>` : ''}
+          </div>
+        </div>
+      `).join('')
+    } catch (err) {
+      $('roomList').innerHTML = '<div class="empty-state">Failed to load rooms</div>'
+    }
+  }
+
+  async function createRoom() {
+    const name = $('createRoomName').value.trim()
+    if (!name) return showError('createRoomError', 'Room name required')
+
+    try {
+      const res = await fetch('/rooms/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ name })
+      })
+      const data = await res.json()
+
+      if (!res.ok) return showError('createRoomError', data.error || 'Failed to create room')
+
+      $('createRoomName').value = ''
+      // auto-join the room you just created
+      joinRoom(data.roomId, name)
+    } catch (err) {
+      showError('createRoomError', 'Network error')
+    }
+  }
+
+  // ══════════════════════════════
+  //  JOIN ROOM (REST + SOCKET)
+  // ══════════════════════════════
+  async function joinRoom(roomId, roomName) {
+    // 1. REST call to add player to DB
+    try {
+      const res = await fetch(`/rooms/${roomId}/join`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+
+      if (!res.ok && res.status !== 200) {
+        // might already be in players array — $addToSet won't error, so this is a real issue
+        alert(data.error || 'Cannot join room')
+        return
+      }
+    } catch (err) {
+      alert('Network error joining room')
+      return
+    }
+
+    currentRoomId = roomId
+
+    // 2. Socket connection
+    if (socket) socket.disconnect()
+
+    socket = io({ auth: { token } })
 
     socket.on('connect', () => {
-      console.log('connected:', socket.id)
-      socket.emit('join-room', { roomId: '6a2075d5d0f06a64666fbb0a', username: 'Ani' })
+      $('status').textContent = `connected: ${socket.id}`
+      $('status').className = 'status connected'
+      $('log').classList.add('active')
+      $('log').innerHTML = ''
+
+      socket.emit('join-room', { roomId: currentRoomId, username: currentUser.username })
+      log(`Joined "${roomName}"`, 'join')
     })
 
-    socket.on('player-joined', ({ username }) => {
-      console.log(`${username} joined the room`)
+    socket.on('connect_error', (err) => {
+      $('status').textContent = 'connection failed'
+      $('status').className = 'status error'
     })
 
-    socket.on('game-started', (data) => {
-      console.log('GAME STARTED:', data)
+    // show waiting room
+    showPanel('waitingPanel')
+    $('waitingInfo').textContent = `Room: ${roomName} (${roomId.slice(-6)})`
+
+    // ── Room events ──
+    socket.on('player-joined', ({ username }) => log(`${username} joined`, 'join'))
+    socket.on('player-left', ({ socketId }) => log(`${socketId.slice(-4)} left`, 'left'))
+
+    // ── Game events ──
+    socket.on('new-question', (data) => {
+      $('waitingPanel').classList.remove('active')
+      $('questionCard').classList.add('active')
+      $('gameOver').classList.remove('active')
+      $('questionText').textContent = data.question
+      $('feedback').className = 'feedback'
+
+      // timer animation
+      const fill = $('timerFill')
+      fill.style.transition = 'none'
+      fill.style.width = '100%'
+      fill.offsetHeight  // force reflow
+      fill.style.transition = 'width 15s linear'
+      fill.style.width = '0%'
+
+      // render options
+      $('optionsBox').innerHTML = data.options
+        .map((opt, i) => `<button class="option-btn" onclick="submitAnswer(${i}, this)">${opt}</button>`)
+        .join('')
     })
 
-    socket.on('error', (data) => {
-      console.log('ERROR:', data.message)
+    socket.on('answer-result', ({ correct, scores }) => {
+      const fb = $('feedback')
+      fb.textContent = correct ? '✓ Correct! +10' : '✗ Wrong answer'
+      fb.className = correct ? 'feedback correct' : 'feedback wrong'
+      renderScores(scores)
+      document.querySelectorAll('.option-btn').forEach(btn => btn.disabled = true)
     })
 
-    function startGame() {
-      socket.emit('start-game')
-    }
-  </script>
+    socket.on('game-over', ({ scores }) => {
+      $('questionCard').classList.remove('active')
+      $('gameOver').classList.add('active')
+      renderScores(scores)
+      log('Game over!', '')
+    })
+
+    socket.on('error', ({ message }) => log(`ERROR: ${message}`, 'left'))
+  }
+
+  // ══════════════════════════════
+  //  GAME ACTIONS
+  // ══════════════════════════════
+  function startGame() {
+    if (socket) socket.emit('start-game')
+  }
+
+  function submitAnswer(index, btn) {
+    if (!socket) return
+    socket.emit('submit-answer', { answer: index })
+    document.querySelectorAll('.option-btn').forEach(b => b.disabled = true)
+    btn.style.borderColor = '#60a5fa'
+  }
+
+  function leaveRoom() {
+    if (socket) { socket.disconnect(); socket = null; }
+    currentRoomId = null
+    $('status').textContent = ''
+    $('log').classList.remove('active')
+    $('scoreboard').classList.remove('active')
+    $('questionCard').classList.remove('active')
+    $('gameOver').classList.remove('active')
+    showPanel('lobbyPanel')
+    fetchRooms()
+  }
+
+  function backToLobby() {
+    leaveRoom()
+  }
+
+  // ══════════════════════════════
+  //  HELPERS
+  // ══════════════════════════════
+  function log(msg, cls = '') {
+    const el = $('log')
+    el.innerHTML += `<div class="${cls}">${msg}</div>`
+    el.scrollTop = el.scrollHeight
+  }
+
+  function renderScores(scores) {
+    const sb = $('scoreboard')
+    sb.classList.add('active')
+    const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1])
+    $('scoreRows').innerHTML = sorted
+      .map(([name, pts]) => `<div class="score-row"><span class="name">${name}</span><span class="pts">${pts}</span></div>`)
+      .join('')
+  }
+</script>
 </body>
 </html>
