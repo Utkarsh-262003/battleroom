@@ -9,6 +9,18 @@ const jwt = require('jsonwebtoken')
 const app = express() 
 const Room = require('./models/Room')
 const GameResult = require('./models/GameResult')
+const rateLimit = require('express-rate-limit')
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000 ,
+   max: 100,
+  message: "SORRY TOO MANY REQUEST"
+})
+const limiter2 = rateLimit({
+  windowMs: 15 * 60 * 1000 ,
+   max: 10,
+  message: "SORRY TOO MANY REQUEST"
+})
+app.use(limiter)
 
 app.use(express.json()) 
 const questions = [ 
@@ -45,13 +57,16 @@ app.use((req, res, next) => {
   console.log(`${req.method} ${req.url}`) 
   next() 
 }) 
-  
+
+
+
 const authRouter   = require('./routes/auth.js') 
 const roomRouter   = require('./routes/rooms.js') 
 const gameRouter   = require('./routes/game.js') 
 const leaderRouter = require('./routes/leaderboard.js') 
   
-app.use('/auth',        authRouter) 
+app.use('/auth',  limiter2,
+       authRouter) 
 app.use('/rooms',       roomRouter) 
 app.use('/game',        gameRouter) 
 app.use('/leaderboard', leaderRouter) 
