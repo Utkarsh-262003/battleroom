@@ -56,7 +56,7 @@ app.use('/rooms',       roomRouter)
 app.use('/game',        gameRouter) 
 app.use('/leaderboard', leaderRouter) 
 
-app.get('/test', (req, res) => {
+app.get('/', (req, res) => {
   res.sendFile(__dirname + '/test.html')
 })
   
