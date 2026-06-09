@@ -183,10 +183,10 @@ io.on('connection', (socket) => {
         }
       }
       catch(err){
-          socket.emit('error', { message: 'Internal server error' })
-          return
-
-      }
+        console.error('Gemini error:', err)
+        socket.emit('error', { message: 'Internal server error' })
+        return
+}
         sendQuestion(currentRoom)
       }
       else{
