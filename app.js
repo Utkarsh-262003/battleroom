@@ -8,6 +8,8 @@ const express = require('express')
 const jwt = require('jsonwebtoken')
 const app = express() 
 const helmet = require('helmet') 
+const gemini = process.env.GEMINI_API_KEY
+
 app.use(helmet())
 const Room = require('./models/Room')
 const GameResult = require('./models/GameResult')
@@ -26,33 +28,7 @@ app.use(limiter)
 
 app.use(express.json()) 
 app.use(express.static('public'))
-const questions = [ 
-  {
-  question: "What is the capital of India?",
-  options: ["Paris", "London", "New Delhi", "Madrid"],
-  correctOption: 2
-},
-{
-  question: "Who is the richest person in the world?",
-  options: ["Jeff Bezos", "Elon Musk", "Dario Amodei", "Donald Trump"],
-  correctOption: 1
-},
-{
-  question: "Who is the main female protagonist in Solo-Leveling?",
-  options: ["Cha Hae-In", "Lee Joo-Hee", "Radiru Esil", "Park Hee-Jin"],
-  correctOption: 0
-},
-{
-  question: "How many continents are there in the world?",
-  options: ["5", "7", "6", "8"],
-  correctOption: 1
-},
-{
-  question: "Which Country has the highest GDP(Nominal)?",
-  options: ["Germany", "Japan", "China", "USA"],
-  correctOption: 3
-}
-]
+
   const gameState = {}
 
   
@@ -89,13 +65,13 @@ app.use((err, req, res, next) => {
 function sendQuestion(roomId){
         const state = gameState[roomId]
         state.answered = new Set()
-        const question = questions[state.currentQuestion]
+        const question = gameState[roomId].questions[state.currentQuestion]
         const { correctOption, ...safeQuestion } = question 
         io.to(roomId).emit('new-question', safeQuestion)
         state.timer = setTimeout(async()=>{
           console.log("time-up")
           state.currentQuestion++
-          if(state.currentQuestion === questions.length){
+          if(state.currentQuestion === state.questions.length){
               const room = await Room.findById(roomId)
               Object.entries(state.scores).forEach(([username, score]) => {
                 const userId = state.playerIds[username]
@@ -113,7 +89,29 @@ function sendQuestion(roomId){
         
 
 }
+const { GoogleGenerativeAI } = require('@google/generative-ai')
+
+async function fetchQuestions() {
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
+  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
   
+  const prompt = `Generate 5 random general knowledge quiz questions. 
+  Return ONLY a JSON array, no markdown, no explanation, just the raw JSON.
+  Format:
+  [
+    {
+      "question": "question text",
+      "options": ["option1", "option2", "option3", "option4"],
+      "correctOption": 0
+    }
+  ]
+  correctOption is the index of the correct answer in the options array.`
+
+  const result = await model.generateContent(prompt)
+  const text = result.response.text()
+  return JSON.parse(text)
+}
+
 const PORT = process.env.PORT 
 
 const server = http.createServer(app)
@@ -159,6 +157,7 @@ io.on('connection', (socket) => {
       const pusher = socket.data.user._id
       let room
       
+      
       try{
        room = await Room.findById(currentRoom)
       }
@@ -166,15 +165,26 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Internal server error' })
           return    
           }
+
+      
       const host = room.host
+      
       if (pusher === host.toString()) {
+        try{
         gameState[currentRoom] = {
           currentQuestion: 0,
           scores: {},
           timer: null,
           answered: new Set(),
-          playerIds: {}
+          playerIds: {},
+          questions: await fetchQuestions()
+
         }
+      }
+      catch(err){
+          socket.emit('error', { message: 'Internal server error' })
+
+      }
         sendQuestion(currentRoom)
       }
       else{
@@ -189,7 +199,7 @@ io.on('connection', (socket) => {
 
     if (state.answered.has(username)) return  
     state.answered.add(username) 
-    const question = questions[state.currentQuestion]
+    const question = gameState[currentRoom].questions[state.currentQuestion]
 
     if (answer == question.correctOption) {
         state.scores[username] = (state.scores[username] || 0) + 10
