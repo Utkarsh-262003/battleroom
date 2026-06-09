@@ -7,6 +7,7 @@ mongoose.connect(process.env.MONGO_URI)
 const express = require('express') 
 const jwt = require('jsonwebtoken')
 const app = express() 
+app.set('trust proxy', 1)
 const helmet = require('helmet') 
 const gemini = process.env.GEMINI_API_KEY
 
@@ -183,6 +184,7 @@ io.on('connection', (socket) => {
       }
       catch(err){
           socket.emit('error', { message: 'Internal server error' })
+          return
 
       }
         sendQuestion(currentRoom)
