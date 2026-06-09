@@ -95,7 +95,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai')
 
 async function fetchQuestions() {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' })
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
   const prompt = `Generate 5 random general knowledge quiz questions. 
   Return ONLY a JSON array, no markdown, no explanation, just the raw JSON.
   Format:
