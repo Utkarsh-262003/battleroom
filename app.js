@@ -25,6 +25,7 @@ const limiter2 = rateLimit({
 app.use(limiter)
 
 app.use(express.json()) 
+app.use(express.static('public'))
 const questions = [ 
   {
   question: "What is the capital of India?",
