@@ -9,10 +9,29 @@ let currentRoomId = null
 const $ = id => document.getElementById(id)
 
 // ══════════════════════════════════
+//  SAFE DOM HELPERS
+// ══════════════════════════════════
+// Every piece of data that came from a user or the server goes through
+// textContent, never innerHTML. Room names and usernames are chosen by
+// people; building HTML strings out of them is how stored XSS happens.
+function el(tag, className, text) {
+  const node = document.createElement(tag)
+  if (className) node.className = className
+  if (text !== undefined && text !== null) node.textContent = String(text)
+  return node
+}
+
+const ROOM_STATUSES = ['waiting', 'in-progress', 'finished']
+
+function badgeClass(status) {
+  return ROOM_STATUSES.includes(status) ? `badge badge-${status}` : 'badge'
+}
+
+// ══════════════════════════════════
 //  NAV + SCROLL
 // ══════════════════════════════════
 window.addEventListener('scroll', () => {
-  document.getElementById('mainNav').classList.toggle('scrolled', window.scrollY > 20)
+  $('mainNav').classList.toggle('scrolled', window.scrollY > 20)
 })
 
 const observer = new IntersectionObserver((entries) => {
@@ -34,17 +53,17 @@ function showPanel(id) {
 }
 
 function showError(elId, msg) {
-  const el = $(elId)
-  el.textContent = msg
-  el.classList.add('visible')
-  setTimeout(() => el.classList.remove('visible'), 4000)
+  const node = $(elId)
+  node.textContent = msg
+  node.classList.add('visible')
+  setTimeout(() => node.classList.remove('visible'), 4000)
 }
 
 function showSuccess(elId, msg) {
-  const el = $(elId)
-  el.textContent = msg
-  el.classList.add('visible')
-  setTimeout(() => el.classList.remove('visible'), 4000)
+  const node = $(elId)
+  node.textContent = msg
+  node.classList.add('visible')
+  setTimeout(() => node.classList.remove('visible'), 4000)
 }
 
 // ══════════════════════════════════
@@ -56,6 +75,7 @@ async function signup() {
   const username = $('signupUsername').value.trim()
   const password = $('signupPassword').value
   if (!name || !email || !username || !password) return showError('signupError', 'All fields required')
+  if (password.length < 8) return showError('signupError', 'Password must be at least 8 characters')
   try {
     const res = await fetch('/auth/signup', {
       method: 'POST',
@@ -84,7 +104,12 @@ async function login() {
     token = data.token
     const payload = JSON.parse(atob(token.split('.')[1]))
     currentUser = { _id: payload._id, username: payload.username }
-    $('greeting').innerHTML = `Hey, <strong>${currentUser.username}</strong>`
+
+    $('greeting').replaceChildren(
+      document.createTextNode('Hey, '),
+      el('strong', null, currentUser.username)
+    )
+
     $('userBar').classList.add('active')
     showPanel('lobbyPanel')
     fetchRooms()
@@ -96,7 +121,7 @@ function logout() {
   if (socket) { socket.disconnect(); socket = null }
   $('userBar').classList.remove('active')
   $('log').classList.remove('active')
-  $('log').querySelector('.log-inner-wrap').innerHTML = ''
+  $('log').querySelector('.log-inner-wrap').replaceChildren()
   $('status').textContent = ''
   $('status').className = ''
   $('scoreboard').classList.remove('active')
@@ -108,30 +133,57 @@ function logout() {
 // ══════════════════════════════════
 //  ROOMS (REST)
 // ══════════════════════════════════
+function emptyState(title, subtitle) {
+  const wrap = el('div', 'empty-state')
+  wrap.append(el('div', 'empty-mark'))
+  wrap.append(el('p', null, title))
+  if (subtitle) wrap.append(el('span', null, subtitle))
+  return wrap
+}
+
+function roomCard(r) {
+  const card = el('div', 'room-card')
+
+  const top = el('div', 'room-card-top')
+  top.append(el('div', 'room-name-text', r.name))
+  top.append(el('span', badgeClass(r.status), r.status))
+  card.append(top)
+
+  const count = r.players.length
+  card.append(el('div', 'room-meta',
+    `${count} player${count !== 1 ? 's' : ''} · ID ${String(r._id).slice(-6)}`))
+
+  if (r.status === 'waiting') {
+    const btn = el('button', 'btn btn-primary btn-sm join-btn', 'Join Room')
+    btn.dataset.roomId = r._id
+    btn.dataset.roomName = r.name
+    card.append(btn)
+  } else {
+    const btn = el('button', 'btn btn-ghost btn-sm', 'Unavailable')
+    btn.disabled = true
+    card.append(btn)
+  }
+
+  return card
+}
+
 async function fetchRooms() {
+  const list = $('roomList')
   try {
     const res = await fetch('/rooms', { headers: { 'Authorization': `Bearer ${token}` } })
     const data = await res.json()
     const rooms = data.rooms || []
-    const list = $('roomList')
+
+    list.replaceChildren()
+
     if (rooms.length === 0) {
-      list.innerHTML = `<div class="empty-state"><div class="empty-mark"></div><p>No rooms yet</p><span>Be the first to create one</span></div>`
+      list.append(emptyState('No rooms yet', 'Be the first to create one'))
       return
     }
-    list.innerHTML = rooms.map(r => `
-      <div class="room-card">
-        <div class="room-card-top">
-          <div class="room-name-text">${r.name}</div>
-          <span class="badge badge-${r.status.replace(' ', '-')}">${r.status}</span>
-        </div>
-        <div class="room-meta">${r.players.length} player${r.players.length !== 1 ? 's' : ''} · ID ${r._id.slice(-6)}</div>
-        ${r.status === 'waiting'
-          ? `<button class="btn btn-primary btn-sm join-btn" data-room-id="${r._id}" data-room-name="${r.name}">Join Room</button>`
-          : `<button class="btn btn-ghost btn-sm" disabled>Unavailable</button>`
-        }
-      </div>`).join('')
+
+    rooms.forEach(r => list.append(roomCard(r)))
   } catch {
-    $('roomList').innerHTML = '<div class="empty-state"><p>Failed to load rooms</p></div>'
+    list.replaceChildren(emptyState('Failed to load rooms'))
   }
 }
 
@@ -160,7 +212,7 @@ async function joinRoom(roomId, roomName) {
       method: 'POST', headers: { 'Authorization': `Bearer ${token}` }
     })
     const data = await res.json()
-    if (!res.ok && res.status !== 200) { alert(data.error || 'Cannot join room'); return }
+    if (!res.ok) { alert(data.error || 'Cannot join room'); return }
   } catch { alert('Network error joining room'); return }
 
   currentRoomId = roomId
@@ -171,8 +223,9 @@ async function joinRoom(roomId, roomName) {
     $('status').textContent = `connected · ${socket.id.slice(0, 8)}`
     $('status').className = 'connected'
     $('log').classList.add('active')
-    $('log').querySelector('.log-inner-wrap').innerHTML = ''
-    socket.emit('join-room', { roomId: currentRoomId, username: currentUser.username })
+    $('log').querySelector('.log-inner-wrap').replaceChildren()
+    // the server derives the username from the JWT, so it is not sent here
+    socket.emit('join-room', { roomId: currentRoomId })
     log(`Joined "${roomName}"`, 'join')
   })
 
@@ -182,10 +235,13 @@ async function joinRoom(roomId, roomName) {
   })
 
   showPanel('waitingPanel')
-  $('waitingInfo').innerHTML = `<span class="pulse"></span>${roomName} · ${roomId.slice(-6)}`
+  $('waitingInfo').replaceChildren(
+    el('span', 'pulse'),
+    document.createTextNode(`${roomName} · ${String(roomId).slice(-6)}`)
+  )
 
   socket.on('player-joined', ({ username }) => log(`${username} joined`, 'join'))
-  socket.on('player-left',   ({ socketId }) => log(`${socketId.slice(-4)} disconnected`, 'left'))
+  socket.on('player-left',   ({ socketId }) => log(`${String(socketId).slice(-4)} disconnected`, 'left'))
 
   socket.on('new-question', (data) => {
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'))
@@ -202,9 +258,13 @@ async function joinRoom(roomId, roomName) {
     fill.style.transition = 'width 15s linear'
     fill.style.width = '0%'
 
-    $('optionsBox').innerHTML = data.options
-      .map((opt, i) => `<button class="option-btn" data-index="${i}">${opt}</button>`)
-      .join('')
+    const box = $('optionsBox')
+    box.replaceChildren()
+    ;(data.options || []).forEach((opt, i) => {
+      const btn = el('button', 'option-btn', opt)
+      btn.dataset.index = i
+      box.append(btn)
+    })
   })
 
   socket.on('answer-result', ({ correct, scores }) => {
@@ -256,32 +316,36 @@ function leaveRoom() {
 //  HELPERS
 // ══════════════════════════════════
 function log(msg, cls = '') {
-  const el = $('log').querySelector('.log-inner-wrap')
-  el.innerHTML += `<div class="${cls}">${msg}</div>`
-  el.scrollTop = el.scrollHeight
+  const wrap = $('log').querySelector('.log-inner-wrap')
+  wrap.append(el('div', cls || null, msg))
+  wrap.scrollTop = wrap.scrollHeight
+}
+
+function scoreRow(name, pts, suffix = '') {
+  const row = el('div', 'score-row')
+  row.append(el('span', 'score-name', name))
+  row.append(el('span', 'score-pts', `${pts}${suffix}`))
+  return row
 }
 
 function renderScores(scores) {
   $('scoreboard').classList.add('active')
   const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1])
   $('sbPlayerCount').textContent = `${sorted.length} player${sorted.length !== 1 ? 's' : ''}`
-  $('scoreRows').innerHTML = sorted
-    .map(([name, pts]) => `
-      <div class="score-row">
-        <span class="score-name">${name}</span>
-        <span class="score-pts">${pts}</span>
-      </div>`).join('')
+  const rows = $('scoreRows')
+  rows.replaceChildren()
+  sorted.forEach(([name, pts]) => rows.append(scoreRow(name, pts)))
 }
 
 function renderFinalScores(scores) {
   const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1])
   const medals = ['🥇', '🥈', '🥉']
-  $('finalScores').innerHTML = sorted
-    .map(([name, pts], i) => `
-      <div class="score-row">
-        <span class="score-name">${medals[i] || ''} ${name}</span>
-        <span class="score-pts">${pts} pts</span>
-      </div>`).join('')
+  const box = $('finalScores')
+  box.replaceChildren()
+  sorted.forEach(([name, pts], i) => {
+    const label = medals[i] ? `${medals[i]} ${name}` : name
+    box.append(scoreRow(label, pts, ' pts'))
+  })
 }
 
 // ══════════════════════════════════

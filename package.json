@@ -1,8 +1,8 @@
 {
   "name": "battleroom",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Real-time multiplayer quiz battle game",
+  "main": "app.js",
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js"
@@ -15,6 +15,9 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "bugs": {
     "url": "https://github.com/Utkarsh-262003/battleroom/issues"
   },
@@ -28,7 +31,9 @@
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.6.3",
-    "nodemon": "^3.1.14",
     "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }

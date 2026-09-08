@@ -1,43 +1,67 @@
 const express = require('express')
 const router = express.Router()
 const bcrypt = require('bcrypt')
-const User = require('../models/User')
 const jwt = require('jsonwebtoken')
-const secret = process.env.JWT_SECRET
+const User = require('../models/User')
 
+// Every one of these must be a real string. Without this check a JSON body
+// like {"email": {"$gt": ""}} reaches Mongoose as a query operator instead
+// of a value, which lets an attacker match users they should not be able to.
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
 
 router.post('/signup', async (req, res) => {
-  const { name, email, username, password } = req.body
-  const hashedPassword = await bcrypt.hash(password, 10)
-   try {
-   const user = await User.create({ name, email, username, password: hashedPassword }) 
-    res.json({ message: 'Signup Successful',name, email, username })
+  const { name, email, username, password } = req.body || {}
 
-}
-    catch (err) {  
-      res.status(409).json({ message: 'Duplicate email or username' })
+  if (![name, email, username, password].every(isNonEmptyString)) {
+    return res.status(400).json({ message: 'All fields are required' })
+  }
+  if (password.length < 8) {
+    return res.status(400).json({ message: 'Password must be at least 8 characters' })
+  }
+
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10)
+    await User.create({ name, email, username, password: hashedPassword })
+    res.json({ message: 'Signup Successful', name, email, username })
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ message: 'Duplicate email or username' })
     }
-  
+    console.error('signup failed:', err.message)
+    res.status(500).json({ message: 'Internal server error' })
+  }
 })
 
 router.post('/login', async (req, res) => {
-  const { email, password } = req.body
-  const user = await User.findOne({ email })
+  const { email, password } = req.body || {}
 
-  if (!user) {
-    res.status(401).json({ message: 'Invalid credentials' })
-  } else {
-        const {_id, username} = user
-    if (await bcrypt.compare(password, user.password)) {
-        res.json({ token: jwt.sign({ _id, username }, secret, { expiresIn: '7d' }) })    
-      } 
-        else {
-      res.status(401).json({ message: 'Invalid credentials' })
-    }
+  if (!isNonEmptyString(email) || !isNonEmptyString(password)) {
+    return res.status(401).json({ message: 'Invalid credentials' })
   }
-}) 
 
+  try {
+    const user = await User.findOne({ email })
 
+    // Same response and roughly the same work either way, so the endpoint
+    // does not tell an attacker whether the email exists.
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid credentials' })
+    }
 
-  
+    const ok = await bcrypt.compare(password, user.password)
+    if (!ok) {
+      return res.status(401).json({ message: 'Invalid credentials' })
+    }
+
+    const { _id, username } = user
+    const token = jwt.sign({ _id, username }, process.env.JWT_SECRET, { expiresIn: '7d' })
+    res.json({ token })
+  } catch (err) {
+    console.error('login failed:', err.message)
+    res.status(500).json({ message: 'Internal server error' })
+  }
+})
+
 module.exports = router
