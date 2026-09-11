@@ -1,0 +1,15 @@
+- hosts: battleroom
+  become: true
+  tasks:
+    - name: Install Docker and Compose
+      apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+        update_cache: true
+
+    - name: Make sure Docker is running
+      service:
+        name: docker
+        state: started
+        enabled: true
