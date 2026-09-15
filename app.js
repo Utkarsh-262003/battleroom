@@ -41,7 +41,14 @@ mongoose.connect(process.env.MONGO_URI)
 // ───────────────────────────────────────────────────────────
 const app = express()
 app.set('trust proxy', 1)
-app.use(helmet())
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      // Disable until this server is behind HTTPS/TLS.
+      upgradeInsecureRequests: null
+    }
+  }
+}))
 app.use(express.json({ limit: '10kb' }))
 
 // Health check sits BEFORE the rate limiter on purpose:

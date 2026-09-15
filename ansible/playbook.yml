@@ -1,5 +1,6 @@
 - hosts: battleroom
   become: true
+
   tasks:
     - name: Install Docker and Compose
       apt:
@@ -13,4 +14,29 @@
         name: docker
         state: started
         enabled: true
-      
+
+    - name: Create Battleroom directory
+      file:
+        path: /opt/battleroom
+        state: directory
+
+    - name: Copy production Compose file
+      copy:
+        src: ../compose.prod.yaml
+        dest: /opt/battleroom/compose.yaml
+
+    - name: Copy Nginx configuration
+      copy:
+        src: ../nginx.conf
+        dest: /opt/battleroom/nginx.conf
+
+    - name: Copy environment file
+      copy:
+        src: ../.env
+        dest: /opt/battleroom/.env
+        mode: '0600'
+
+    - name: Start Battleroom
+      command:
+        cmd: docker compose up -d
+        chdir: /opt/battleroom
