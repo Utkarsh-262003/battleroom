@@ -25,8 +25,20 @@ if (missingEnv.length > 0) {
 const PORT = process.env.PORT
 const JWT_SECRET = process.env.JWT_SECRET
 const QUESTION_MS = 15000
-const QUESTION_COUNT = 50       // questions per game
+const QUESTION_COUNT = 15       // questions per game
+const QUESTION_EXTRA = 5        // ask Gemini for a few spare, in case some are bad or duplicates
 const MAX_FINISHED_ROOMS = 5    // finished rooms kept in the DB; older ones are deleted
+
+// Each game picks a few of these at random, so games don't all get
+// the same "general knowledge" questions.
+const TOPICS = [
+  'world geography', 'space and astronomy', 'Indian history', 'world history',
+  'human body', 'animals', 'inventions', 'sports', 'movies', 'music',
+  'computers and the internet', 'mathematics', 'chemistry', 'physics',
+  'food and cooking', 'famous books', 'languages', 'mythology',
+  'oceans', 'famous buildings', 'money and economics', 'video games'
+]
+const TOPICS_PER_GAME = 5
 
 // ───────────────────────────────────────────────────────────
 //  DATABASE
@@ -139,53 +151,91 @@ app.use((err, req, res, next) => {
 // ───────────────────────────────────────────────────────────
 //  GAME STATE
 // ───────────────────────────────────────────────────────────
+// Every player moves through the questions at their own pace.
+// All players get the same questions, but each one has their own
+// position, their own 15s timer and their own score.
+//
+// gameState[roomId] = {
+//   questions: [...],
+//   finishing: false,
+//   players: {
+//     [username]: { userId, socketId, index, score, answered, done, timer }
+//   }
+// }
 const gameState = {}
 
-function sendQuestion(roomId) {
+function scoresOf(state) {
+  const scores = {}
+  for (const [username, p] of Object.entries(state.players)) {
+    scores[username] = p.score
+  }
+  return scores
+}
+
+// Sends a player their current question and starts their own timer.
+function sendQuestionTo(roomId, username) {
   const state = gameState[roomId]
   if (!state) return
+  const p = state.players[username]
+  if (!p || p.done) return
 
-  state.answered = new Set()
-  const question = state.questions[state.currentQuestion]
+  const question = state.questions[p.index]
   const { correctOption, ...safeQuestion } = question
-  io.to(roomId).emit('new-question', {
+
+  p.answered = false
+  io.to(p.socketId).emit('new-question', {
     ...safeQuestion,
-    number: state.currentQuestion + 1,   // 1-based, for "Question 12 of 50"
-    total: state.questions.length        // real count, in case Gemini sent fewer
+    number: p.index + 1,              // 1-based, for "Question 3 of 15"
+    total: state.questions.length
   })
 
-  state.timer = setTimeout(() => {
-    finishQuestion(roomId).catch(err => {
+  clearTimeout(p.timer)
+  p.timer = setTimeout(() => {
+    advancePlayer(roomId, username).catch(err => {
       console.error('question timer failed:', err.message)
     })
   }, QUESTION_MS)
 }
 
-async function finishQuestion(roomId) {
+// Moves ONE player to their next question. Only that player is affected.
+async function advancePlayer(roomId, username) {
   const state = gameState[roomId]
-  if (!state) return
+  if (!state || state.finishing) return
+  const p = state.players[username]
+  if (!p || p.done) return
 
-  if (state.finishing) return
+  clearTimeout(p.timer)
+  p.index++
 
-  state.currentQuestion++
-
-  if (state.currentQuestion < state.questions.length) {
-    sendQuestion(roomId)
+  if (p.index < state.questions.length) {
+    sendQuestionTo(roomId, username)
     return
   }
 
-  // Last question is done. Block any late "next" clicks while the
-  // results are being saved below.
+  // This player is done. They wait while the others finish.
+  p.done = true
+  io.to(p.socketId).emit('player-finished', { scores: scoresOf(state) })
+
+  await finishGameIfEveryoneDone(roomId)
+}
+
+async function finishGameIfEveryoneDone(roomId) {
+  const state = gameState[roomId]
+  if (!state || state.finishing) return
+
+  const allDone = Object.values(state.players).every(p => p.done)
+  if (!allDone) return
+
   state.finishing = true
 
   const room = await Room.findById(roomId)
   const roomName = room ? room.name : 'unknown room'
 
-  const results = Object.entries(state.scores)
-    .map(([username, score]) => ({
+  const results = Object.entries(state.players)
+    .map(([username, p]) => ({
       username,
-      userId: state.playerIds[username],
-      score,
+      userId: p.userId,
+      score: p.score,
       roomName
     }))
     .filter(r => r.userId)
@@ -199,7 +249,7 @@ async function finishQuestion(roomId) {
     await room.save()
   }
 
-  io.to(roomId).emit('game-over', { scores: state.scores })
+  io.to(roomId).emit('game-over', { scores: scoresOf(state) })
   delete gameState[roomId]
 
   // Runs after players already got game-over, so a cleanup failure
@@ -209,15 +259,8 @@ async function finishQuestion(roomId) {
   })
 }
 
-// Usernames of everyone whose socket is currently in the room.
-function connectedUsernames(roomId) {
-  const socketIds = io.sockets.adapter.rooms.get(roomId) || new Set()
-  const names = new Set()
-  for (const id of socketIds) {
-    const s = io.sockets.sockets.get(id)
-    if (s && s.data.user) names.add(s.data.user.username)
-  }
-  return names
+function clearAllTimers(state) {
+  for (const p of Object.values(state.players)) clearTimeout(p.timer)
 }
 
 // ───────────────────────────────────────────────────────────
@@ -236,16 +279,35 @@ function isValidQuestion(q) {
   )
 }
 
+function pickTopics() {
+  const shuffled = [...TOPICS].sort(() => Math.random() - 0.5)
+  return shuffled.slice(0, TOPICS_PER_GAME)
+}
+
+// Lowercase and strip punctuation, so "What is X?" and "what is x"
+// count as the same question.
+function normalize(text) {
+  return text.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim()
+}
+
 async function fetchQuestions() {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    // JSON mode: makes a malformed reply much less likely on a big set
-    generationConfig: { responseMimeType: 'application/json' }
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 1.0            // more variety between games
+    }
   })
 
-  const prompt = `Generate ${QUESTION_COUNT} random general knowledge quiz questions.
-  Every question must be different. Mix topics and difficulty.
+  const askFor = QUESTION_COUNT + QUESTION_EXTRA
+  const topics = pickTopics().join(', ')
+
+  const prompt = `Generate ${askFor} quiz questions.
+  Spread them across these topics: ${topics}.
+  Every question must be about a different fact. No two questions may ask the same thing.
+  Mix easy, medium and hard.
+  Put the correct answer at a random position among the options.
   Return ONLY a JSON array, no markdown, no explanation, just the raw JSON.
   Format:
   [
@@ -255,7 +317,8 @@ async function fetchQuestions() {
       "correctOption": 0
     }
   ]
-  correctOption is the index of the correct answer in the options array.`
+  correctOption is the index of the correct answer in the options array.
+  Random seed: ${Date.now()}`
 
   const result = await model.generateContent(prompt)
   const raw = result.response.text().trim()
@@ -274,9 +337,17 @@ async function fetchQuestions() {
     throw new Error('Gemini did not return an array')
   }
 
-  // Drop only the malformed questions instead of failing the whole set,
-  // and cap at QUESTION_COUNT in case the model sent extra.
-  const questions = parsed.filter(isValidQuestion).slice(0, QUESTION_COUNT)
+  // Keep valid questions, drop duplicates, cap at QUESTION_COUNT.
+  const seen = new Set()
+  const questions = []
+  for (const q of parsed) {
+    if (!isValidQuestion(q)) continue
+    const key = normalize(q.question)
+    if (seen.has(key)) continue
+    seen.add(key)
+    questions.push(q)
+    if (questions.length === QUESTION_COUNT) break
+  }
 
   if (questions.length === 0) {
     throw new Error('Gemini returned no usable questions')
@@ -357,20 +428,37 @@ io.on('connection', socket => {
 
       const questions = await fetchQuestions()
 
+      // Someone may have clicked Start twice while Gemini was working.
+      if (gameState[currentRoom]) return
+
+      // Everyone connected to the room right now is in the game.
+      const players = {}
+      const socketIds = io.sockets.adapter.rooms.get(currentRoom) || new Set()
+      for (const id of socketIds) {
+        const s = io.sockets.sockets.get(id)
+        if (!s || !s.data.user) continue
+        players[s.data.user.username] = {
+          userId: s.data.user._id,
+          socketId: id,
+          index: 0,
+          score: 0,
+          answered: false,
+          done: false,
+          timer: null
+        }
+      }
+
+      if (Object.keys(players).length === 0) return
+
       room.status = 'in-progress'
       await room.save()
 
-      gameState[currentRoom] = {
-        currentQuestion: 0,
-        scores: {},
-        timer: null,
-        answered: new Set(),
-        playerIds: {},
-        finishing: false,
-        questions
-      }
+      gameState[currentRoom] = { questions, finishing: false, players }
 
-      sendQuestion(currentRoom)
+      io.to(currentRoom).emit('scores-update', { scores: scoresOf(gameState[currentRoom]) })
+      for (const username of Object.keys(players)) {
+        sendQuestionTo(currentRoom, username)
+      }
     } catch (err) {
       console.error('start-game failed:', err.message)
       socket.emit('error', { message: 'Could not start the game' })
@@ -379,51 +467,44 @@ io.on('connection', socket => {
 
   socket.on('submit-answer', ({ answer }) => {
     const state = gameState[currentRoom]
-    if (!state) return
+    if (!state || state.finishing) return
 
-    const username = user.username
-    if (state.answered.has(username)) return
-    state.answered.add(username)
+    const p = state.players[user.username]
+    if (!p || p.done || p.answered) return
+    p.answered = true
 
-    state.playerIds[username] = user._id
-    if (state.scores[username] === undefined) state.scores[username] = 0
-
-    const question = state.questions[state.currentQuestion]
+    const question = state.questions[p.index]
     if (!question) return
 
     const correct = Number(answer) === Number(question.correctOption)
-    if (correct) state.scores[username] += 10
+    if (correct) p.score += 10
+
+    const scores = scoresOf(state)
 
     // Sent only after this player's answer is locked in, so it can't be
     // used to change their own answer.
     socket.emit('answer-result', {
       correct,
       correctOption: question.correctOption,
-      scores: state.scores
+      scores
     })
+
+    // Everyone's live scoreboard updates, not just the player who answered.
+    io.to(currentRoom).emit('scores-update', { scores })
   })
 
-  // "Next" button. Skips the rest of the 15s timer, but only when every
-  // player still connected has answered. Otherwise one fast player could
-  // skip the question for everyone else.
+  // "Next" button: moves only THIS player on. Nobody else is affected.
   socket.on('next-question', ({ number } = {}) => {
     const state = gameState[currentRoom]
     if (!state || state.finishing) return
 
-    // Ignore a click meant for an older question (e.g. two players
-    // clicked Next at the same moment and the first one already moved on).
-    if (Number(number) !== state.currentQuestion + 1) return
+    const p = state.players[user.username]
+    if (!p || p.done || !p.answered) return
 
-    const players = connectedUsernames(currentRoom)
-    const waiting = [...players].filter(name => !state.answered.has(name))
+    // Ignore a double click meant for a question already left behind.
+    if (Number(number) !== p.index + 1) return
 
-    if (waiting.length > 0) {
-      socket.emit('next-blocked', { waitingFor: waiting.length })
-      return
-    }
-
-    clearTimeout(state.timer)
-    finishQuestion(currentRoom).catch(err => {
+    advancePlayer(currentRoom, user.username).catch(err => {
       console.error('next-question failed:', err.message)
     })
   })
@@ -431,15 +512,18 @@ io.on('connection', socket => {
   socket.on('disconnect', () => {
     if (!currentRoom) return
 
-    io.to(currentRoom).emit('player-left', { socketId: socket.id })
-    console.log(`user disconnected from ${currentRoom}:`, socket.id)
+    const roomId = currentRoom
+    io.to(roomId).emit('player-left', { socketId: socket.id })
+    console.log(`user disconnected from ${roomId}:`, socket.id)
 
-    const room = io.sockets.adapter.rooms.get(currentRoom)
+    const state = gameState[roomId]
+    if (!state) return
+
+    const room = io.sockets.adapter.rooms.get(roomId)
     const roomSize = room ? room.size : 0
 
-    if (roomSize === 0 && gameState[currentRoom]) {
-      const roomId = currentRoom
-      clearTimeout(gameState[roomId].timer)
+    if (roomSize === 0) {
+      clearAllTimers(state)
       delete gameState[roomId]
       console.log(`Room ${roomId} is empty. Game state cleared.`)
 
@@ -448,6 +532,18 @@ io.on('connection', socket => {
       Room.updateOne({ _id: roomId, status: 'in-progress' }, { $set: { status: 'finished' } })
         .then(() => pruneFinishedRooms())
         .catch(err => console.error('closing abandoned room failed:', err.message))
+      return
+    }
+
+    // A player left but others remain. Stop their timer and count them
+    // as done, so the game can still end for everyone else.
+    const p = state.players[user.username]
+    if (p && p.socketId === socket.id && !p.done) {
+      clearTimeout(p.timer)
+      p.done = true
+      finishGameIfEveryoneDone(roomId).catch(err => {
+        console.error('finishing game after disconnect failed:', err.message)
+      })
     }
   })
 })

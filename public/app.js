@@ -323,10 +323,25 @@ async function joinRoom(roomId, roomName) {
     nextBtn.style.display = ''
   })
 
-  socket.on('next-blocked', ({ waitingFor }) => {
-    nextBtn.textContent = `Waiting for ${waitingFor} player${waitingFor !== 1 ? 's' : ''}`
-    // let them try again in a moment
-    setTimeout(resetNextButton, 2000)
+  // Any player answered: refresh everyone's live scoreboard.
+  socket.on('scores-update', ({ scores }) => renderScores(scores))
+
+  // You answered your last question. Others may still be playing.
+  socket.on('player-finished', ({ scores }) => {
+    nextBtn.style.display = 'none'
+    currentQuestionNumber = null
+
+    const counter = document.querySelector('#questionCard .q-eyebrow')
+    if (counter) counter.textContent = '— All done'
+    $('questionText').textContent = 'You finished! Waiting for the other players…'
+    $('optionsBox').replaceChildren()
+    $('feedback').className = ''
+
+    const fill = $('timerFill')
+    fill.style.transition = 'none'
+    fill.style.width = '0%'
+
+    renderScores(scores)
   })
 
   socket.on('game-over', ({ scores }) => {
@@ -358,7 +373,6 @@ function submitAnswer(index, btn) {
 function nextQuestion() {
   if (!socket || !currentQuestionNumber) return
   nextBtn.disabled = true
-  nextBtn.textContent = 'Waiting…'
   socket.emit('next-question', { number: currentQuestionNumber })
 }
 
