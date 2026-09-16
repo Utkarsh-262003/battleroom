@@ -25,16 +25,52 @@ if (missingEnv.length > 0) {
 const PORT = process.env.PORT
 const JWT_SECRET = process.env.JWT_SECRET
 const QUESTION_MS = 15000
+const QUESTION_COUNT = 50       // questions per game
+const MAX_FINISHED_ROOMS = 5    // finished rooms kept in the DB; older ones are deleted
 
 // ───────────────────────────────────────────────────────────
 //  DATABASE
 // ───────────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('MongoDB connected'))
+  .then(async () => {
+    console.log('MongoDB connected')
+    // Game state lives in memory, so a restart kills every running game.
+    // Any room still marked in-progress at boot is dead: mark it finished.
+    const { modifiedCount } = await Room.updateMany(
+      { status: 'in-progress' },
+      { $set: { status: 'finished' } }
+    )
+    if (modifiedCount > 0) {
+      console.log(`Marked ${modifiedCount} dead in-progress room(s) as finished`)
+    }
+    // Clear out old finished rooms, keeping the newest MAX_FINISHED_ROOMS.
+    await pruneFinishedRooms()
+  })
   .catch(err => {
     console.error('MongoDB connection failed:', err.message)
     process.exit(1)
   })
+
+// Keeps the newest MAX_FINISHED_ROOMS finished rooms and deletes the rest.
+// Sorting by _id sorts by creation time (ObjectIds embed a timestamp).
+// Waiting and in-progress rooms are never touched.
+async function pruneFinishedRooms() {
+  const keep = await Room.find({ status: 'finished' })
+    .sort({ _id: -1 })
+    .limit(MAX_FINISHED_ROOMS)
+    .select('_id')
+
+  const keepIds = keep.map(r => r._id)
+
+  const { deletedCount } = await Room.deleteMany({
+    status: 'finished',
+    _id: { $nin: keepIds }
+  })
+
+  if (deletedCount > 0) {
+    console.log(`Pruned ${deletedCount} old finished room(s)`)
+  }
+}
 
 // ───────────────────────────────────────────────────────────
 //  APP
@@ -112,7 +148,11 @@ function sendQuestion(roomId) {
   state.answered = new Set()
   const question = state.questions[state.currentQuestion]
   const { correctOption, ...safeQuestion } = question
-  io.to(roomId).emit('new-question', safeQuestion)
+  io.to(roomId).emit('new-question', {
+    ...safeQuestion,
+    number: state.currentQuestion + 1,   // 1-based, for "Question 12 of 50"
+    total: state.questions.length        // real count, in case Gemini sent fewer
+  })
 
   state.timer = setTimeout(() => {
     finishQuestion(roomId).catch(err => {
@@ -125,12 +165,18 @@ async function finishQuestion(roomId) {
   const state = gameState[roomId]
   if (!state) return
 
+  if (state.finishing) return
+
   state.currentQuestion++
 
   if (state.currentQuestion < state.questions.length) {
     sendQuestion(roomId)
     return
   }
+
+  // Last question is done. Block any late "next" clicks while the
+  // results are being saved below.
+  state.finishing = true
 
   const room = await Room.findById(roomId)
   const roomName = room ? room.name : 'unknown room'
@@ -155,14 +201,30 @@ async function finishQuestion(roomId) {
 
   io.to(roomId).emit('game-over', { scores: state.scores })
   delete gameState[roomId]
+
+  // Runs after players already got game-over, so a cleanup failure
+  // can never break the end of a game.
+  pruneFinishedRooms().catch(err => {
+    console.error('pruning finished rooms failed:', err.message)
+  })
+}
+
+// Usernames of everyone whose socket is currently in the room.
+function connectedUsernames(roomId) {
+  const socketIds = io.sockets.adapter.rooms.get(roomId) || new Set()
+  const names = new Set()
+  for (const id of socketIds) {
+    const s = io.sockets.sockets.get(id)
+    if (s && s.data.user) names.add(s.data.user.username)
+  }
+  return names
 }
 
 // ───────────────────────────────────────────────────────────
 //  QUESTIONS (Gemini)
 // ───────────────────────────────────────────────────────────
-function isValidQuestionSet(data) {
-  if (!Array.isArray(data) || data.length === 0) return false
-  return data.every(q =>
+function isValidQuestion(q) {
+  return Boolean(
     q &&
     typeof q.question === 'string' &&
     Array.isArray(q.options) &&
@@ -176,8 +238,14 @@ function isValidQuestionSet(data) {
 
 async function fetchQuestions() {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
-  const prompt = `Generate 5 random general knowledge quiz questions.
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    // JSON mode: makes a malformed reply much less likely on a big set
+    generationConfig: { responseMimeType: 'application/json' }
+  })
+
+  const prompt = `Generate ${QUESTION_COUNT} random general knowledge quiz questions.
+  Every question must be different. Mix topics and difficulty.
   Return ONLY a JSON array, no markdown, no explanation, just the raw JSON.
   Format:
   [
@@ -192,7 +260,7 @@ async function fetchQuestions() {
   const result = await model.generateContent(prompt)
   const raw = result.response.text().trim()
 
-  // the model sometimes wraps the JSON in markdown fences
+  // backup in case the model still wraps the JSON in markdown fences
   const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
 
   let parsed
@@ -202,11 +270,22 @@ async function fetchQuestions() {
     throw new Error('Gemini returned unparseable JSON')
   }
 
-  if (!isValidQuestionSet(parsed)) {
-    throw new Error('Gemini returned a question set in the wrong shape')
+  if (!Array.isArray(parsed)) {
+    throw new Error('Gemini did not return an array')
   }
 
-  return parsed
+  // Drop only the malformed questions instead of failing the whole set,
+  // and cap at QUESTION_COUNT in case the model sent extra.
+  const questions = parsed.filter(isValidQuestion).slice(0, QUESTION_COUNT)
+
+  if (questions.length === 0) {
+    throw new Error('Gemini returned no usable questions')
+  }
+  if (questions.length < QUESTION_COUNT) {
+    console.warn(`Gemini gave ${questions.length}/${QUESTION_COUNT} usable questions`)
+  }
+
+  return questions
 }
 
 // ───────────────────────────────────────────────────────────
@@ -287,6 +366,7 @@ io.on('connection', socket => {
         timer: null,
         answered: new Set(),
         playerIds: {},
+        finishing: false,
         questions
       }
 
@@ -314,7 +394,38 @@ io.on('connection', socket => {
     const correct = Number(answer) === Number(question.correctOption)
     if (correct) state.scores[username] += 10
 
-    socket.emit('answer-result', { correct, scores: state.scores })
+    // Sent only after this player's answer is locked in, so it can't be
+    // used to change their own answer.
+    socket.emit('answer-result', {
+      correct,
+      correctOption: question.correctOption,
+      scores: state.scores
+    })
+  })
+
+  // "Next" button. Skips the rest of the 15s timer, but only when every
+  // player still connected has answered. Otherwise one fast player could
+  // skip the question for everyone else.
+  socket.on('next-question', ({ number } = {}) => {
+    const state = gameState[currentRoom]
+    if (!state || state.finishing) return
+
+    // Ignore a click meant for an older question (e.g. two players
+    // clicked Next at the same moment and the first one already moved on).
+    if (Number(number) !== state.currentQuestion + 1) return
+
+    const players = connectedUsernames(currentRoom)
+    const waiting = [...players].filter(name => !state.answered.has(name))
+
+    if (waiting.length > 0) {
+      socket.emit('next-blocked', { waitingFor: waiting.length })
+      return
+    }
+
+    clearTimeout(state.timer)
+    finishQuestion(currentRoom).catch(err => {
+      console.error('next-question failed:', err.message)
+    })
   })
 
   socket.on('disconnect', () => {
@@ -327,9 +438,16 @@ io.on('connection', socket => {
     const roomSize = room ? room.size : 0
 
     if (roomSize === 0 && gameState[currentRoom]) {
-      clearTimeout(gameState[currentRoom].timer)
-      delete gameState[currentRoom]
-      console.log(`Room ${currentRoom} is empty. Game state cleared.`)
+      const roomId = currentRoom
+      clearTimeout(gameState[roomId].timer)
+      delete gameState[roomId]
+      console.log(`Room ${roomId} is empty. Game state cleared.`)
+
+      // Everyone left mid-game. Without this the room stays
+      // "in-progress" forever and clutters the lobby.
+      Room.updateOne({ _id: roomId, status: 'in-progress' }, { $set: { status: 'finished' } })
+        .then(() => pruneFinishedRooms())
+        .catch(err => console.error('closing abandoned room failed:', err.message))
     }
   })
 })

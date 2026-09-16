@@ -5,6 +5,10 @@ let token = null
 let currentUser = null
 let socket = null
 let currentRoomId = null
+let currentQuestionNumber = null
+let selectedIndex = null
+
+const MAX_LOBBY_ROOMS = 5
 
 const $ = id => document.getElementById(id)
 
@@ -172,7 +176,13 @@ async function fetchRooms() {
   try {
     const res = await fetch('/rooms', { headers: { 'Authorization': `Bearer ${token}` } })
     const data = await res.json()
-    const rooms = data.rooms || []
+    // Newest first (an ObjectId starts with its creation time, and all ids
+    // are the same length, so comparing them as strings sorts by age).
+    // Then show only the newest MAX_LOBBY_ROOMS.
+    const rooms = (data.rooms || [])
+      .slice()
+      .sort((a, b) => String(b._id).localeCompare(String(a._id)))
+      .slice(0, MAX_LOBBY_ROOMS)
 
     list.replaceChildren()
 
@@ -247,9 +257,27 @@ async function joinRoom(roomId, roomName) {
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'))
     $('questionCard').classList.add('active')
     $('gameOver').classList.remove('active')
+
+    // "— Question 12 of 50". Falls back to the plain label if an older
+    // server doesn't send number/total.
+    const counter = document.querySelector('#questionCard .q-eyebrow')
+    if (counter) {
+      counter.textContent = (data.number && data.total)
+        ? `— Question ${data.number} of ${data.total}`
+        : '— Question'
+    }
+
     $('questionText').textContent = data.question
+    currentQuestionNumber = data.number || null
+    selectedIndex = null
+
+    // Hide feedback through its class only. The old inline display:none
+    // beat the CSS, so feedback never showed after the first question.
     $('feedback').className = ''
-    $('feedback').style.display = 'none'
+    $('feedback').style.display = ''
+
+    resetNextButton()
+    nextBtn.style.display = 'none'
 
     const fill = $('timerFill')
     fill.style.transition = 'none'
@@ -267,15 +295,42 @@ async function joinRoom(roomId, roomName) {
     })
   })
 
-  socket.on('answer-result', ({ correct, scores }) => {
+  socket.on('answer-result', ({ correct, correctOption, scores }) => {
+    const buttons = document.querySelectorAll('.option-btn')
+    const rightBtn = buttons[correctOption]
+    const rightText = rightBtn ? rightBtn.textContent : null
+
     const fb = $('feedback')
-    fb.textContent = correct ? '✓ Correct — +10 points' : '✗ Wrong answer'
+    if (correct) {
+      fb.textContent = '✓ Correct — +10 points'
+    } else {
+      fb.textContent = rightText
+        ? `✗ Wrong. Correct answer: ${rightText}`
+        : '✗ Wrong answer'
+    }
     fb.className = correct ? 'correct' : 'wrong'
+
+    // Colour the options: correct one green, your wrong pick red.
+    buttons.forEach((b, i) => {
+      if (i === correctOption) {
+        paintOption(b, '#F0FDF4', '#16A34A', '#166534')
+      } else if (!correct && b.dataset.index === String(selectedIndex)) {
+        paintOption(b, '#FEF2F2', '#DC2626', '#991B1B')
+      }
+    })
     renderScores(scores)
     document.querySelectorAll('.option-btn').forEach(b => b.disabled = true)
+    nextBtn.style.display = ''
+  })
+
+  socket.on('next-blocked', ({ waitingFor }) => {
+    nextBtn.textContent = `Waiting for ${waitingFor} player${waitingFor !== 1 ? 's' : ''}`
+    // let them try again in a moment
+    setTimeout(resetNextButton, 2000)
   })
 
   socket.on('game-over', ({ scores }) => {
+    nextBtn.style.display = 'none'
     $('questionCard').classList.remove('active')
     $('gameOver').classList.add('active')
     renderScores(scores)
@@ -293,10 +348,23 @@ function startGame() { if (socket) socket.emit('start-game') }
 
 function submitAnswer(index, btn) {
   if (!socket) return
+  selectedIndex = index
   socket.emit('submit-answer', { answer: index })
   document.querySelectorAll('.option-btn').forEach(b => b.disabled = true)
   btn.style.borderColor = 'var(--text-primary)'
   btn.style.background = 'var(--bg-secondary)'
+}
+
+function nextQuestion() {
+  if (!socket || !currentQuestionNumber) return
+  nextBtn.disabled = true
+  nextBtn.textContent = 'Waiting…'
+  socket.emit('next-question', { number: currentQuestionNumber })
+}
+
+function resetNextButton() {
+  nextBtn.disabled = false
+  nextBtn.textContent = 'Next →'
 }
 
 function leaveRoom() {
@@ -319,6 +387,12 @@ function log(msg, cls = '') {
   const wrap = $('log').querySelector('.log-inner-wrap')
   wrap.append(el('div', cls || null, msg))
   wrap.scrollTop = wrap.scrollHeight
+}
+
+function paintOption(btn, bg, border, text) {
+  btn.style.background = bg
+  btn.style.borderColor = border
+  btn.style.color = text
 }
 
 function scoreRow(name, pts, suffix = '') {
@@ -349,6 +423,22 @@ function renderFinalScores(scores) {
 }
 
 // ══════════════════════════════════
+//  NEXT BUTTON
+// ══════════════════════════════════
+// Built here so test.html doesn't need to change. It sits right under
+// the answer feedback and only shows after you answer.
+const nextRow = el('div')
+nextRow.style.display = 'flex'
+nextRow.style.justifyContent = 'flex-end'
+nextRow.style.marginTop = 'var(--space-2)'
+
+const nextBtn = el('button', 'btn btn-primary btn-sm', 'Next →')
+nextBtn.id = 'nextBtn'
+nextBtn.style.display = 'none'
+nextRow.append(nextBtn)
+$('feedback').after(nextRow)
+
+// ══════════════════════════════════
 //  EVENT LISTENERS
 // ══════════════════════════════════
 
@@ -377,6 +467,7 @@ $('leaveWaitingBtn').addEventListener('click', leaveRoom)
 
 // Game
 $('leaveGameBtn').addEventListener('click', leaveRoom)
+nextBtn.addEventListener('click', nextQuestion)
 $('backToLobbyBtn').addEventListener('click', leaveRoom)
 
 // Event delegation — room join buttons (dynamically rendered)
