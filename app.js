@@ -55,6 +55,7 @@ mongoose.connect(process.env.MONGO_URI)
     if (modifiedCount > 0) {
       console.log(`Marked ${modifiedCount} dead in-progress room(s) as finished`)
     }
+
     // Clear out old finished rooms, keeping the newest MAX_FINISHED_ROOMS.
     await pruneFinishedRooms()
   })
@@ -80,7 +81,7 @@ async function pruneFinishedRooms() {
   })
 
   if (deletedCount > 0) {
-    console.log(`Pruned ${deletedCount} old finished room(s)`)
+    console.log(`Pruned ${deletedCount} old finished rooms`)
   }
 }
 
@@ -92,8 +93,8 @@ app.set('trust proxy', 1)
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
-      // Disable until this server is behind HTTPS/TLS.
-      upgradeInsecureRequests: null
+      // The server is now permanently behind HTTPS.
+      upgradeInsecureRequests: []
     }
   }
 }))
@@ -309,8 +310,7 @@ async function fetchQuestions() {
   Mix easy, medium and hard.
   Put the correct answer at a random position among the options.
   Return ONLY a JSON array, no markdown, no explanation, just the raw JSON.
-  Format:
-  [
+  Format:   [
     {
       "question": "question text",
       "options": ["option1", "option2", "option3", "option4"],
@@ -411,6 +411,7 @@ io.on('connection', socket => {
         socket.emit('error', { message: 'Join a room first' })
         return
       }
+
       if (gameState[currentRoom]) {
         socket.emit('error', { message: 'Game already in progress' })
         return
@@ -421,6 +422,7 @@ io.on('connection', socket => {
         socket.emit('error', { message: 'Room not found' })
         return
       }
+
       if (room.host.toString() !== user._id) {
         socket.emit('error', { message: 'Only the host can start the game' })
         return
