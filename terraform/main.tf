@@ -76,6 +76,22 @@ resource "aws_vpc_security_group_ingress_rule" "https" {
   to_port           = 443
 }
 
+resource "aws_vpc_security_group_ingress_rule" "node_exporter_from_monitoring" {
+  security_group_id            = aws_security_group.battleroom.id
+  referenced_security_group_id = aws_security_group.monitoring.id
+  from_port                    = 9100
+  ip_protocol                  = "tcp"
+  to_port                     = 9100
+}
+
+resource "aws_vpc_security_group_ingress_rule" "battleroom_metrics_from_monitoring" {
+  security_group_id            = aws_security_group.battleroom.id
+  referenced_security_group_id = aws_security_group.monitoring.id
+  from_port                    = 9101
+  ip_protocol                  = "tcp"
+  to_port                     = 9101
+}
+
 resource "aws_vpc_security_group_egress_rule" "all_out" {
   security_group_id = aws_security_group.battleroom.id
   cidr_ipv4         = "0.0.0.0/0"
@@ -104,14 +120,6 @@ resource "aws_vpc_security_group_egress_rule" "monitoring_all_out" {
   security_group_id = aws_security_group.monitoring.id
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
-}
-
-resource "aws_vpc_security_group_ingress_rule" "node_exporter_from_monitoring" {
-  security_group_id            = aws_security_group.battleroom.id
-  referenced_security_group_id = aws_security_group.monitoring.id
-  from_port                    = 9100
-  ip_protocol                  = "tcp"
-  to_port                     = 9100
 }
 
 resource "aws_instance" "battleroom" {
@@ -173,4 +181,3 @@ resource "aws_eip_association" "monitoring" {
   instance_id   = aws_instance.monitoring.id
   allocation_id = aws_eip.monitoring.id
 }
-

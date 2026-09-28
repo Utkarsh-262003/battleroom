@@ -6,6 +6,9 @@ services:
       - .env
     restart: unless-stopped
 
+    ports:
+      - "9101:9101"
+
     healthcheck:
       test:
         [
