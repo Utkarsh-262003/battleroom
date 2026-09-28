@@ -82,6 +82,38 @@ resource "aws_vpc_security_group_egress_rule" "all_out" {
   ip_protocol       = "-1"
 }
 
+resource "aws_security_group" "monitoring" {
+  name        = "monitoring"
+  description = "Allow SSH inbound traffic and all outbound traffic for monitoring"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "monitoring"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "monitoring_ssh" {
+  security_group_id = aws_security_group.monitoring.id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 22
+  ip_protocol       = "tcp"
+  to_port           = 22
+}
+
+resource "aws_vpc_security_group_egress_rule" "monitoring_all_out" {
+  security_group_id = aws_security_group.monitoring.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "node_exporter_from_monitoring" {
+  security_group_id            = aws_security_group.battleroom.id
+  referenced_security_group_id = aws_security_group.monitoring.id
+  from_port                    = 9100
+  ip_protocol                  = "tcp"
+  to_port                     = 9100
+}
+
 resource "aws_instance" "battleroom" {
   ami           = "ami-01a00762f46d584a1"
   instance_type = "t3.micro"
@@ -98,6 +130,7 @@ resource "aws_instance" "battleroom" {
     Name = "battleroom-server"
   }
 }
+
 resource "aws_eip" "eip" {
   domain = "vpc"
 
@@ -107,7 +140,37 @@ resource "aws_eip" "eip" {
 }
 
 resource "aws_eip_association" "battleroom" {
-  instance_id  = aws_instance.battleroom.id
+  instance_id   = aws_instance.battleroom.id
   allocation_id = aws_eip.eip.id
+}
+
+resource "aws_instance" "monitoring" {
+  ami           = "ami-01a00762f46d584a1"
+  instance_type = "t3.micro"
+
+  subnet_id = aws_subnet.main.id
+
+  vpc_security_group_ids = [
+    aws_security_group.monitoring.id
+  ]
+
+  key_name = "battleroom-key"
+
+  tags = {
+    Name = "battleroom-monitoring"
+  }
+}
+
+resource "aws_eip" "monitoring" {
+  domain = "vpc"
+
+  tags = {
+    Name = "battleroom-monitoring-eip"
+  }
+}
+
+resource "aws_eip_association" "monitoring" {
+  instance_id   = aws_instance.monitoring.id
+  allocation_id = aws_eip.monitoring.id
 }
 
