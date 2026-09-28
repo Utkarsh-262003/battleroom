@@ -89,6 +89,12 @@
   become: true
 
   tasks:
+    - name: Check Grafana admin password is provided
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'GRAFANA_ADMIN_PASSWORD') | length > 0
+        fail_msg: "GRAFANA_ADMIN_PASSWORD is not set. Run this playbook through GitHub Actions or provide the environment variable."
+
     - name: Install Docker and Compose
       apt:
         name:
@@ -112,18 +118,36 @@
         path: /opt/monitoring/prometheus
         state: directory
 
+    - name: Create Grafana provisioning directory
+      file:
+        path: /opt/monitoring/grafana/provisioning/datasources
+        state: directory
+
     - name: Copy Prometheus configuration
       template:
         src: ../monitoring/prometheus.yml.j2
         dest: /opt/monitoring/prometheus/prometheus.yml
       notify: Restart Prometheus
 
-    - name: Copy Prometheus Compose file
+    - name: Copy Grafana data source configuration
+      copy:
+        src: ../monitoring/grafana/provisioning/datasources/prometheus.yml
+        dest: /opt/monitoring/grafana/provisioning/datasources/prometheus.yml
+      notify: Restart Grafana
+
+    - name: Create Grafana environment file
+      copy:
+        content: |
+          GF_SECURITY_ADMIN_PASSWORD={{ lookup('env', 'GRAFANA_ADMIN_PASSWORD') }}
+        dest: /opt/monitoring/.env
+        mode: '0600'
+
+    - name: Copy Prometheus and Grafana Compose file
       copy:
         src: ../monitoring/compose.yaml
         dest: /opt/monitoring/compose.yaml
 
-    - name: Start Prometheus
+    - name: Start Prometheus and Grafana
       command:
         cmd: docker compose up -d
         chdir: /opt/monitoring
@@ -132,4 +156,9 @@
     - name: Restart Prometheus
       command:
         cmd: docker compose restart prometheus
+        chdir: /opt/monitoring
+
+    - name: Restart Grafana
+      command:
+        cmd: docker compose restart grafana
         chdir: /opt/monitoring

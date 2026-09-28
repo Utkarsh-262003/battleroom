@@ -2,11 +2,23 @@ services:
   prometheus:
     image: prom/prometheus:v3.14.0
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     restart: unless-stopped
     volumes:
       - ./prometheus:/etc/prometheus:ro
       - prometheus-data:/prometheus
 
+  grafana:
+    image: grafana/grafana:12.2.0
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+
 volumes:
   prometheus-data:
+  grafana-data:
