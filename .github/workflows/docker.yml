@@ -58,3 +58,5 @@ jobs:
       - name: Deploy with Ansible
         working-directory: ansible
         run: ansible-playbook -i inventory.ini playbook.yml
+      - name: Smoke test
+        run: curl --fail --retry 10 --retry-delay 5 --retry-all-errors https://battleroom.utkarshtyagi.in/healthz
