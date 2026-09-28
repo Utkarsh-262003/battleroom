@@ -402,9 +402,22 @@
       .auth-headline { font-size: clamp(2.5rem, 12vw, 4rem); }
       .gameover-title { font-size: clamp(2rem, 8vw, 3rem); }
     }
+        .watermark {
+      position: fixed;
+      right: 1rem;
+      bottom: 0.75rem;
+      font-size: 0.7rem;
+      color: var(--text-tertiary);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.7;
+      pointer-events: none;
+      z-index: 999;
+    }
   </style>
 </head>
 <body>
+    <div class="watermark">Built by Utkarsh</div>
 
 <!-- NAV -->
 <nav id="mainNav">
