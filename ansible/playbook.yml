@@ -1,13 +1,14 @@
 - hosts: battleroom
   become: true
 
-  tasks:
-    - name: Install Docker, Compose, and Certbot
+   tasks:
+    - name: Install Docker, Compose, Certbot, and Node Exporter
       apt:
         name:
           - docker.io
           - docker-compose-v2
           - certbot
+          - prometheus-node-exporter
         update_cache: true
 
     - name: Make sure Docker is running
