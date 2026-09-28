@@ -83,3 +83,53 @@
       command:
         cmd: docker compose exec nginx nginx -s reload
         chdir: /opt/battleroom
+
+
+- hosts: monitoring
+  become: true
+
+  tasks:
+    - name: Install Docker and Compose
+      apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+        update_cache: true
+
+    - name: Make sure Docker is running
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Create Monitoring directory
+      file:
+        path: /opt/monitoring
+        state: directory
+
+    - name: Create Prometheus configuration directory
+      file:
+        path: /opt/monitoring/prometheus
+        state: directory
+
+    - name: Copy Prometheus configuration
+      template:
+        src: ../monitoring/prometheus.yml.j2
+        dest: /opt/monitoring/prometheus/prometheus.yml
+      notify: Restart Prometheus
+
+    - name: Copy Prometheus Compose file
+      copy:
+        src: ../monitoring/compose.yaml
+        dest: /opt/monitoring/compose.yaml
+
+    - name: Start Prometheus
+      command:
+        cmd: docker compose up -d
+        chdir: /opt/monitoring
+
+  handlers:
+    - name: Restart Prometheus
+      command:
+        cmd: docker compose restart prometheus
+        chdir: /opt/monitoring
