@@ -2,11 +2,12 @@
   become: true
 
   tasks:
-    - name: Install Docker and Compose
+    - name: Install Docker, Compose, and Certbot
       apt:
         name:
           - docker.io
           - docker-compose-v2
+          - certbot
         update_cache: true
 
     - name: Make sure Docker is running
@@ -20,15 +21,26 @@
         path: /opt/battleroom
         state: directory
 
+    - name: Create Certbot challenge directory
+      file:
+        path: /var/www/certbot
+        state: directory
+
+    - name: Create Nginx configuration directory
+      file:
+        path: /opt/battleroom/nginx
+        state: directory
+
     - name: Copy production Compose file
       copy:
         src: ../compose.prod.yaml
         dest: /opt/battleroom/compose.yaml
 
-    - name: Copy Nginx configuration
+    - name: Copy Nginx HTTP configuration
       copy:
-        src: ../nginx.conf
-        dest: /opt/battleroom/nginx.conf
+        src: ../nginx/http.conf
+        dest: /opt/battleroom/nginx/http.conf
+      notify: Reload Nginx
 
     - name: Copy environment file
       copy:
@@ -39,4 +51,34 @@
     - name: Start Battleroom
       command:
         cmd: docker compose up -d
+        chdir: /opt/battleroom
+
+    - name: Obtain Let's Encrypt certificate
+      command:
+        cmd: >
+          certbot certonly
+          --webroot
+          -w /var/www/certbot
+          -d battleroom.utkarshtyagi.in
+          --email utkarshtyagi9050@gmail.com
+          --agree-tos
+          --non-interactive
+        creates: /etc/letsencrypt/live/battleroom.utkarshtyagi.in/fullchain.pem
+
+    - name: Install Certbot renewal hook
+      copy:
+        src: files/reload-nginx.sh
+        dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+        mode: '0755'
+
+    - name: Copy Nginx HTTPS configuration
+      copy:
+        src: ../nginx/https.conf
+        dest: /opt/battleroom/nginx/https.conf
+      notify: Reload Nginx
+
+  handlers:
+    - name: Reload Nginx
+      command:
+        cmd: docker compose exec nginx nginx -s reload
         chdir: /opt/battleroom
