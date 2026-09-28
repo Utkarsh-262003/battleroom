@@ -53,6 +53,10 @@
       command:
         cmd: docker compose up -d
         chdir: /opt/battleroom
+        
+    - name: Remove unused Docker images
+      command:
+        cmd: docker image prune -af
 
     - name: Obtain Let's Encrypt certificate
       command:
