@@ -24,3 +24,56 @@ groups:
           severity: warning
         annotations:
           summary: "Memory usage on {{ $labels.instance }} is above 90%"
+
+      # The site as a player sees it. For the game this also fires when
+      # MongoDB is down, because /healthz then returns 503.
+      - alert: EndpointDown
+        expr: probe_success == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} is failing its health check"
+
+      # certbot renews at 30 days left, so 14 days means renewal is broken.
+      - alert: CertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 14
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The HTTPS certificate for {{ $labels.instance }} expires in {{ $value | humanize }} days"
+
+      # The second condition stops one failed request on a quiet site
+      # from counting as a 5% error rate.
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="battleroom", status=~"5.."}[5m]))
+              / sum(rate(http_requests_total{job="battleroom"}[5m]))
+          ) > 0.05
+          and sum(increase(http_requests_total{job="battleroom", status=~"5.."}[5m])) > 3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "More than 5% of requests are failing with a 5xx error"
+
+      - alert: SlowResponses
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job="battleroom"}[5m]))) > 1
+          and sum(rate(http_request_duration_seconds_count{job="battleroom"}[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "95% of requests are slower than 1 second"
+
+      # Game starts go over WebSockets, so Gemini failures never show up
+      # in the HTTP error rate.
+      - alert: QuestionGenerationFailing
+        expr: increase(question_generations_total{outcome="failure"}[15m]) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gemini failed to generate questions {{ $value | humanize }} times in 15 minutes"

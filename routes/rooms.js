@@ -27,7 +27,12 @@ router.post('/:roomId/join', authMiddleware, async (req, res) => {
       { returnDocument: 'after' }
     )
 
-    res.json({ message: 'Joined Successfully', room: updatedRoom })
+    // The room can be cleaned up between the two queries.
+    if (!updatedRoom) {
+      return res.status(404).json({ error: 'Room Not Found' })
+    }
+
+    res.json({ message: 'Joined Successfully', roomId: updatedRoom._id })
   } catch (err) {
     // The old version returned 404 for every failure, which hid real errors
     // behind a wrong status code and made debugging impossible.
@@ -40,8 +45,18 @@ router.get('/', authMiddleware, async (req, res) => {
   try {
     const rooms = await Room.find()
       .sort({ _id: -1 })
-      .limit(50)
-    res.json({ rooms })
+      .limit(20)
+      .select('name status players')
+
+    // Only what the lobby shows. Member user IDs stay on the server.
+    res.json({
+      rooms: rooms.map(r => ({
+        _id: r._id,
+        name: r.name,
+        status: r.status,
+        playerCount: r.players.length
+      }))
+    })
   } catch (err) {
     console.error('list rooms failed:', err.message)
     res.status(500).json({ error: 'Internal Server Error' })

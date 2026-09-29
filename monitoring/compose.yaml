@@ -27,6 +27,14 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/etc/grafana/dashboards:ro
 
+  blackbox:
+    image: prom/blackbox-exporter:v0.28.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+    volumes:
+      - ./blackbox:/etc/blackbox:ro
+
   nginx:
     image: nginx:1.29.1-alpine
     ports:
@@ -35,6 +43,8 @@ services:
     restart: unless-stopped
     depends_on:
       - grafana
+      - prometheus
+      - alertmanager
     volumes:
       - ./nginx:/etc/nginx/conf.d:ro
       - /var/www/certbot:/var/www/certbot:ro

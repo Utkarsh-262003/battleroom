@@ -338,6 +338,31 @@
     #feedback.correct { display: block; background: #F0FDF4; border: 1px solid #BBF7D0; color: #166534; }
     #feedback.wrong   { display: block; background: #FEF2F2; border: 1px solid #FECACA; color: #991B1B; }
     .leave-game-row { margin-top: var(--space-4); display: flex; justify-content: flex-end; }
+    .waiting-players {
+      text-align: left; margin-bottom: var(--space-4);
+      background: var(--bg-surface); border: 1px solid var(--border);
+      border-radius: 4px; overflow: hidden;
+    }
+    .host-tag {
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 0.2rem 0.6rem; border-radius: 2px;
+      background: var(--bg-secondary); color: var(--text-secondary); border: 1px solid var(--border);
+    }
+    .waiting-note {
+      font-size: var(--text-sm); color: var(--text-secondary);
+      margin-bottom: var(--space-4); min-height: 1.4em;
+    }
+
+    /* LEADERBOARD */
+    .leaderboard-section { margin-top: var(--space-12); max-width: 560px; }
+    .leaderboard-card {
+      background: var(--bg-surface); border: 1px solid var(--border);
+      border-radius: 4px; overflow: hidden; margin-top: var(--space-3);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    }
+    .leader-rank { display: inline-block; width: 2rem; color: var(--text-tertiary); font-weight: 600; }
+    .leader-games { font-size: var(--text-xs); color: var(--text-tertiary); margin-left: 0.5rem; }
+    .leaderboard-empty { padding: var(--space-4) 1.25rem; font-size: var(--text-sm); color: var(--text-tertiary); }
 
     /* SCOREBOARD */
     #scoreboard {
@@ -450,11 +475,11 @@
       <div class="alert alert-error" id="loginError"></div>
       <div class="field">
         <label>Email</label>
-        <input type="email" id="loginEmail" placeholder="you@example.com">
+        <input type="email" id="loginEmail" placeholder="you@example.com" autocomplete="email">
       </div>
       <div class="field">
         <label>Password</label>
-        <input type="password" id="loginPassword" placeholder="••••••••">
+        <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
       </div>
       <button class="btn btn-primary btn-full" id="loginBtn">Continue</button>
       <p class="switch-row">No account? <button id="toSignupBtn">Create one</button></p>
@@ -477,19 +502,19 @@
       <div class="alert alert-success" id="signupSuccess"></div>
       <div class="field">
         <label>Full Name</label>
-        <input type="text" id="signupName" placeholder="John Doe">
+        <input type="text" id="signupName" placeholder="John Doe" maxlength="50" autocomplete="name">
       </div>
       <div class="field">
         <label>Email</label>
-        <input type="email" id="signupEmail" placeholder="you@example.com">
+        <input type="email" id="signupEmail" placeholder="you@example.com" maxlength="254" autocomplete="email">
       </div>
       <div class="field">
         <label>Username</label>
-        <input type="text" id="signupUsername" placeholder="johndoe">
+        <input type="text" id="signupUsername" placeholder="johndoe" maxlength="20" autocomplete="username">
       </div>
       <div class="field">
         <label>Password</label>
-        <input type="password" id="signupPassword" placeholder="••••••••">
+        <input type="password" id="signupPassword" placeholder="••••••••" autocomplete="new-password">
       </div>
       <button class="btn btn-primary btn-full" id="signupBtn">Create Account</button>
       <p class="switch-row">Already have an account? <button id="toLoginBtn">Sign in</button></p>
@@ -510,10 +535,21 @@
         <button class="btn btn-primary btn-sm" id="newRoomBtn">+ New Room</button>
       </div>
     </div>
+    <div class="alert alert-error" id="lobbyNotice"></div>
     <div class="room-grid" id="roomList">
       <div class="empty-state">
         <div class="empty-mark"></div>
         <p>Loading rooms...</p>
+      </div>
+    </div>
+    <div class="leaderboard-section">
+      <div class="section-eyebrow">— All time</div>
+      <h2 class="section-heading">Leaderboard</h2>
+      <div class="leaderboard-card">
+        <div class="sb-head"><span>Player</span><span>Points</span></div>
+        <div id="leaderboardRows">
+          <div class="leaderboard-empty">Loading...</div>
+        </div>
       </div>
     </div>
   </div>
@@ -530,7 +566,7 @@
       <div class="alert alert-error" id="createRoomError"></div>
       <div class="field">
         <label>Room Name</label>
-        <input type="text" id="createRoomName" placeholder="Epic Quiz Battle">
+        <input type="text" id="createRoomName" placeholder="Epic Quiz Battle" maxlength="60">
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" id="createRoomBtn">Create</button>
@@ -549,6 +585,11 @@
       <div id="waitingInfo">
         <span class="pulse"></span>Standing by...
       </div>
+      <div class="waiting-players">
+        <div class="sb-head"><span>Players</span><span id="waitingCount"></span></div>
+        <div id="waitingPlayers"></div>
+      </div>
+      <p class="waiting-note" id="waitingNote"></p>
       <div class="btn-row-center">
         <button class="btn btn-primary" id="startBtn">Start Game</button>
         <button class="btn btn-ghost" id="leaveWaitingBtn">Leave</button>

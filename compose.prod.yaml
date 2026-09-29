@@ -1,6 +1,9 @@
 services:
   app:
-    image: utkarsh694208607/battleroom:latest
+    # Set by the deploy to the exact commit being shipped, so a deploy
+    # always runs the image it built and a rollback is a re-deploy of an
+    # older SHA. Falls back to latest when run by hand.
+    image: utkarsh694208607/battleroom:${IMAGE_TAG:-latest}
     pull_policy: always
     env_file:
       - .env

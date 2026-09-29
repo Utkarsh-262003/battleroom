@@ -1,0 +1,24 @@
+# Needs nginx already answering on port 80 with http.conf, which serves
+# /.well-known/acme-challenge/. So this runs after the containers start.
+#
+# Takes:
+#   certbot_domain       the domain to get a certificate for
+#   certbot_reload_hook  script that reloads nginx after each renewal
+
+- name: Obtain Let's Encrypt certificate for {{ certbot_domain }}
+  ansible.builtin.command:
+    cmd: >
+      certbot certonly
+      --webroot
+      -w /var/www/certbot
+      -d {{ certbot_domain }}
+      --email {{ certbot_email }}
+      --agree-tos
+      --non-interactive
+    creates: /etc/letsencrypt/live/{{ certbot_domain }}/fullchain.pem
+
+- name: Install Certbot renewal hook
+  ansible.builtin.copy:
+    src: "{{ certbot_reload_hook }}"
+    dest: /etc/letsencrypt/renewal-hooks/deploy/{{ certbot_reload_hook | basename }}
+    mode: '0755'

@@ -1,0 +1,64 @@
+- name: Install Docker, Compose, Certbot, and Node Exporter
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - docker-compose-v2
+      - certbot
+      - prometheus-node-exporter
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Make sure Docker is running
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Create Certbot challenge directory
+  ansible.builtin.file:
+    path: /var/www/certbot
+    state: directory
+    mode: '0755'
+
+- name: Check for a swap file
+  ansible.builtin.stat:
+    path: /swapfile
+  register: base_swapfile
+
+# 1 GB of memory is tight. A small swap file absorbs short spikes
+# instead of the kernel killing a container. Skipped when the disk
+# has less than 3 GB free.
+- name: Create a 1 GB swap file
+  when:
+    - not base_swapfile.stat.exists
+    - ansible_swaptotal_mb == 0
+    - (ansible_mounts | selectattr('mount', 'equalto', '/') | first).size_available > 3 * 1024 * 1024 * 1024
+  block:
+    - name: Allocate the swap file
+      ansible.builtin.command: fallocate -l 1G /swapfile
+      changed_when: true
+
+    - name: Make the swap file readable by root only
+      ansible.builtin.file:
+        path: /swapfile
+        mode: '0600'
+
+    - name: Format the swap file
+      ansible.builtin.command: mkswap /swapfile
+      changed_when: true
+
+    - name: Turn the swap file on
+      ansible.builtin.command: swapon /swapfile
+      changed_when: true
+
+    - name: Turn the swap file on at boot
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        line: /swapfile none swap sw 0 0
+
+- name: Only use swap when memory is nearly full
+  ansible.builtin.copy:
+    content: "vm.swappiness = 10\n"
+    dest: /etc/sysctl.d/99-swappiness.conf
+    mode: '0644'
+  notify: Apply sysctl settings

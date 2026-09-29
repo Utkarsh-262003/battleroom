@@ -13,7 +13,9 @@ module.exports = (req, res, next) => {
   }
 
   try {
-    req.user = jwt.verify(incomingToken, process.env.JWT_SECRET)
+    // Pinning the algorithm means a token signed any other way is
+    // rejected, whatever its header claims.
+    req.user = jwt.verify(incomingToken, process.env.JWT_SECRET, { algorithms: ['HS256'] })
     next()
   } catch {
     res.status(401).json({ message: 'Invalid credentials' })

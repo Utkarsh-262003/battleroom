@@ -4,14 +4,85 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+  # Rollback: Actions → Build and Deploy → Run workflow, and enter the
+  # commit SHA to go back to. Leave it empty to build and deploy main.
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Deploy this existing image tag (a commit SHA) instead of building. Empty = build and deploy."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
 
 jobs:
-  docker:
+  test:
+    # A rollback must work even when the newest code is broken.
+    if: github.event_name != 'workflow_dispatch' || inputs.image_tag == ''
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+  infra-lint:
+    if: github.event_name != 'workflow_dispatch' || inputs.image_tag == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Lint Ansible
+        run: pipx run --spec ansible-lint==26.9.0 ansible-lint ansible/playbook.yml
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive terraform/
+
+      # No AWS credentials here: -backend=false only downloads the
+      # provider so the configuration can be checked.
+      - name: Validate Terraform
+        working-directory: terraform
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+  docker:
+    needs: [test, infra-lint]
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.image_tag == '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -24,20 +95,47 @@ jobs:
         with:
           context: .
           push: true
+          build-args: |
+            APP_VERSION=${{ github.sha }}
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/battleroom:${{ github.sha }}
             ${{ secrets.DOCKERHUB_USERNAME }}/battleroom:latest
+          # Unchanged layers (the npm install, mostly) are reused.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     needs: docker
+    if: >-
+      always() && !cancelled() && (
+        (github.event_name == 'push' && needs.docker.result == 'success') ||
+        (github.event_name == 'workflow_dispatch' && inputs.image_tag == '' && needs.docker.result == 'success') ||
+        (github.event_name == 'workflow_dispatch' && inputs.image_tag != '')
+      )
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # One deploy at a time. A second push waits instead of running
+    # Ansible against the same boxes at the same moment.
+    concurrency:
+      group: production
+      cancel-in-progress: false
 
     env:
-      ANSIBLE_HOST_KEY_CHECKING: "False"
+      IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Check the image tag
+        run: |
+          if ! [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_.-]{1,128}$ ]]; then
+            echo "::error::Not a valid image tag: $IMAGE_TAG"
+            exit 1
+          fi
+          docker manifest inspect "utkarsh694208607/battleroom:$IMAGE_TAG" > /dev/null \
+            || { echo "::error::Image tag $IMAGE_TAG does not exist on Docker Hub"; exit 1; }
 
       - name: Install Ansible
         run: pipx install --include-deps ansible
@@ -49,6 +147,19 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/battleroom-key.pem
           chmod 600 ~/.ssh/battleroom-key.pem
+
+      # With ansible/known_hosts in the repo, SSH refuses to talk to a
+      # server whose identity changed. See the README for how to add it.
+      - name: Trust the servers' SSH host keys
+        run: |
+          if [ -s ansible/known_hosts ]; then
+            cp ansible/known_hosts ~/.ssh/known_hosts
+            chmod 600 ~/.ssh/known_hosts
+            echo "ANSIBLE_HOST_KEY_CHECKING=True" >> "$GITHUB_ENV"
+          else
+            echo "::warning::ansible/known_hosts is missing, so the servers' SSH host keys are not checked. See the README."
+            echo "ANSIBLE_HOST_KEY_CHECKING=False" >> "$GITHUB_ENV"
+          fi
 
       - name: Write environment file
         env:
@@ -62,8 +173,28 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: ansible-playbook -i inventory.ini playbook.yml
 
+      # Healthy AND running the version just deployed. Images built
+      # before versions were stamped report none, which is accepted so
+      # rolling back to them still works.
       - name: Smoke test app
-        run: curl --fail --retry 10 --retry-delay 5 --retry-all-errors https://battleroom.utkarshtyagi.in/healthz
+        run: |
+          for attempt in $(seq 1 20); do
+            body=$(curl --fail --silent --show-error --max-time 10 https://battleroom.utkarshtyagi.in/healthz || true)
+            if echo "$body" | jq -e --arg v "$IMAGE_TAG" '.status == "ok" and (.version == $v or .version == null)' > /dev/null 2>&1; then
+              echo "Healthy: $body"
+              exit 0
+            fi
+            echo "Attempt $attempt: ${body:-no response}"
+            sleep 5
+          done
+          exit 1
 
-      - name: Smoke test Grafana
-        run: curl --fail --retry 10 --retry-delay 5 --retry-all-errors https://grafana.utkarshtyagi.in/api/health
+      - name: Smoke test monitoring
+        run: |
+          for url in \
+            https://grafana.utkarshtyagi.in/api/health \
+            https://grafana.utkarshtyagi.in/healthz/prometheus \
+            https://grafana.utkarshtyagi.in/healthz/alertmanager; do
+            curl --fail --silent --show-error --retry 10 --retry-delay 5 --retry-all-errors -o /dev/null "$url"
+            echo "OK: $url"
+          done

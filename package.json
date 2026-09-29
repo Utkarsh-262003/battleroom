@@ -5,7 +5,9 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "dev": "nodemon app.js"
+    "dev": "nodemon app.js",
+    "test": "node --test --test-timeout=120000 \"test/*.test.js\"",
+    "lint": "eslint ."
   },
   "repository": {
     "type": "git",
@@ -23,7 +25,7 @@
   },
   "homepage": "https://github.com/Utkarsh-262003/battleroom#readme",
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
+    "@google/genai": "^2.24.0",
     "bcrypt": "^6.0.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
@@ -35,6 +37,11 @@
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
+    "mongodb-memory-server": "^11.3.0",
+    "nodemon": "^3.1.14",
+    "socket.io-client": "^4.8.4"
   }
 }

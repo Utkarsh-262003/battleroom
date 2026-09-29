@@ -21,3 +21,32 @@ scrape_configs:
     static_configs:
       - targets:
           - {{ hostvars[groups['battleroom'][0]]['ansible_default_ipv4']['address'] }}:9101
+
+  # The public URLs, checked from outside the app box over HTTPS. This
+  # catches what the app's own metrics cannot: nginx down, MongoDB down
+  # (/healthz returns 503), DNS broken, or a certificate about to expire.
+  - job_name: blackbox
+    metrics_path: /probe
+    params:
+      module: [https_2xx]
+    static_configs:
+      - targets:
+          - https://battleroom.utkarshtyagi.in/healthz
+          - https://grafana.utkarshtyagi.in/api/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+
+  - job_name: alertmanager
+    static_configs:
+      - targets:
+          - alertmanager:9093

@@ -1,0 +1,74 @@
+name: Uptime check
+
+# Watches the site and the monitoring stack from outside AWS. If the
+# monitoring box dies, Prometheus cannot report it; this still can.
+# It posts to Discord when something breaks and again when it recovers.
+
+on:
+  schedule:
+    # Every 15 minutes, off the hour, when GitHub's schedulers are busiest.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: uptime
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # Each URL gets about two minutes of retries, so a deploy that
+      # restarts a container is not reported as an outage.
+      - name: Check the site and the monitoring stack
+        id: check
+        run: |
+          failed=""
+          for target in \
+            "Game|https://battleroom.utkarshtyagi.in/healthz" \
+            "Grafana|https://grafana.utkarshtyagi.in/api/health" \
+            "Prometheus|https://grafana.utkarshtyagi.in/healthz/prometheus" \
+            "Alertmanager|https://grafana.utkarshtyagi.in/healthz/alertmanager"; do
+            name="${target%%|*}"
+            url="${target#*|}"
+            if curl --fail --silent --show-error --max-time 10 \
+                 --retry 4 --retry-delay 30 --retry-all-errors -o /dev/null "$url"; then
+              echo "OK: $name"
+            else
+              echo "DOWN: $name"
+              failed="$failed $name"
+            fi
+          done
+          echo "failed=${failed# }" >> "$GITHUB_OUTPUT"
+          [ -z "$failed" ]
+
+      # Only a change is announced: healthy to broken, or broken to
+      # healthy. A long outage does not post every 15 minutes.
+      - name: Tell Discord when the state changes
+        if: always() && steps.check.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          FAILED: ${{ steps.check.outputs.failed }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          previous=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow uptime.yml \
+            --status completed --limit 1 --json conclusion --jq '.[0].conclusion // "success"')
+
+          if [ -n "$FAILED" ] && [ "$previous" != "failure" ]; then
+            message="🔴 **Uptime check failed** (checked from outside AWS): $FAILED is not responding. $RUN_URL"
+          elif [ -z "$FAILED" ] && [ "$previous" = "failure" ]; then
+            message="✅ **Uptime check recovered**: the game and the monitoring stack are responding again."
+          else
+            echo "No change since the last check (previous: $previous)."
+            exit 0
+          fi
+
+          jq -n --arg content "$message" '{content: $content}' \
+            | curl --fail --silent --show-error -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK_URL"

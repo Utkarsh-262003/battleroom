@@ -1,99 +1,89 @@
-- hosts: battleroom
+- name: Set up the app box
+  hosts: battleroom
   become: true
 
+  vars:
+    # The pipeline passes the commit SHA it just built, or an older one
+    # to roll back. Run by hand without it, the newest image is used.
+    image_tag: "{{ lookup('env', 'IMAGE_TAG') | default('latest', true) }}"
+
+  roles:
+    - base
+
   tasks:
-    - name: Install Docker, Compose, Certbot, and Node Exporter
-      apt:
-        name:
-          - docker.io
-          - docker-compose-v2
-          - certbot
-          - prometheus-node-exporter
-        update_cache: true
-        cache_valid_time: 3600
-
-    - name: Make sure Docker is running
-      service:
-        name: docker
-        state: started
-        enabled: true
-
     - name: Create Battleroom directory
-      file:
+      ansible.builtin.file:
         path: /opt/battleroom
         state: directory
-
-    - name: Create Certbot challenge directory
-      file:
-        path: /var/www/certbot
-        state: directory
+        mode: '0755'
 
     - name: Create Nginx configuration directory
-      file:
+      ansible.builtin.file:
         path: /opt/battleroom/nginx
         state: directory
+        mode: '0755'
 
     - name: Copy production Compose file
-      copy:
+      ansible.builtin.copy:
         src: ../compose.prod.yaml
         dest: /opt/battleroom/compose.yaml
+        mode: '0644'
 
     - name: Copy Nginx HTTP configuration
-      copy:
+      ansible.builtin.copy:
         src: ../nginx/http.conf
         dest: /opt/battleroom/nginx/http.conf
+        mode: '0644'
       notify: Reload Nginx
 
     - name: Copy environment file
-      copy:
+      ansible.builtin.copy:
         src: ../.env
         dest: /opt/battleroom/.env
         mode: '0600'
 
-    - name: Start Battleroom
-      command:
+    - name: Start Battleroom with image {{ image_tag }}
+      ansible.builtin.command:
         cmd: docker compose up -d
         chdir: /opt/battleroom
+      environment:
+        IMAGE_TAG: "{{ image_tag }}"
+      register: app_compose_up
+      changed_when: app_compose_up.stderr is search('Created|Recreated|Started')
 
     - name: Remove unused Docker images
-      command:
+      ansible.builtin.command:
         cmd: docker image prune -af
+      register: app_image_prune
+      changed_when: "'Total reclaimed space: 0B' not in app_image_prune.stdout"
 
-    - name: Obtain Let's Encrypt certificate
-      command:
-        cmd: >
-          certbot certonly
-          --webroot
-          -w /var/www/certbot
-          -d battleroom.utkarshtyagi.in
-          --email utkarshtyagi9050@gmail.com
-          --agree-tos
-          --non-interactive
-        creates: /etc/letsencrypt/live/battleroom.utkarshtyagi.in/fullchain.pem
-
-    - name: Install Certbot renewal hook
-      copy:
-        src: files/reload-nginx.sh
-        dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
-        mode: '0755'
+    - name: Get the HTTPS certificate
+      ansible.builtin.include_role:
+        name: certbot
+      vars:
+        certbot_domain: battleroom.utkarshtyagi.in
+        certbot_reload_hook: "{{ playbook_dir }}/files/reload-nginx.sh"
 
     - name: Copy Nginx HTTPS configuration
-      copy:
+      ansible.builtin.copy:
         src: ../nginx/https.conf
         dest: /opt/battleroom/nginx/https.conf
+        mode: '0644'
       notify: Reload Nginx
 
   handlers:
     - name: Reload Nginx
-      command:
+      ansible.builtin.command:
         cmd: docker compose exec nginx nginx -s reload
         chdir: /opt/battleroom
+      changed_when: true
 
 
-- hosts: monitoring
+- name: Set up the monitoring box
+  hosts: monitoring
   become: true
 
-  tasks:
+  pre_tasks:
     - name: Check Grafana admin password is provided
       ansible.builtin.assert:
         that:
@@ -106,99 +96,80 @@
           - lookup('env', 'DISCORD_WEBHOOK_URL') | length > 0
         fail_msg: "DISCORD_WEBHOOK_URL is not set. Run this playbook through GitHub Actions or provide the environment variable."
 
-    - name: Install Docker, Compose, Certbot, and Node Exporter
-      apt:
-        name:
-          - docker.io
-          - docker-compose-v2
-          - certbot
-          - prometheus-node-exporter
-        update_cache: true
-        cache_valid_time: 3600
+  roles:
+    - base
 
-    - name: Make sure Docker is running
-      service:
-        name: docker
-        state: started
-        enabled: true
-
-    - name: Create Monitoring directory
-      file:
-        path: /opt/monitoring
+  tasks:
+    - name: Create Monitoring directories
+      ansible.builtin.file:
+        path: "/opt/monitoring/{{ item }}"
         state: directory
-
-    - name: Create Certbot challenge directory
-      file:
-        path: /var/www/certbot
-        state: directory
-
-    - name: Create Nginx configuration directory
-      file:
-        path: /opt/monitoring/nginx
-        state: directory
-
-    - name: Create Prometheus configuration directory
-      file:
-        path: /opt/monitoring/prometheus
-        state: directory
-
-    - name: Create Alertmanager configuration directory
-      file:
-        path: /opt/monitoring/alertmanager
-        state: directory
-
-    - name: Create Grafana data source provisioning directory
-      file:
-        path: /opt/monitoring/grafana/provisioning/datasources
-        state: directory
-
-    - name: Create Grafana dashboard provisioning directory
-      file:
-        path: /opt/monitoring/grafana/provisioning/dashboards
-        state: directory
-
-    - name: Create Grafana dashboards directory
-      file:
-        path: /opt/monitoring/grafana/dashboards
-        state: directory
+        mode: '0755'
+      loop:
+        - ""
+        - nginx
+        - prometheus
+        - alertmanager
+        - blackbox
+        - grafana/provisioning/datasources
+        - grafana/provisioning/dashboards
+        - grafana/dashboards
 
     - name: Copy Prometheus configuration
-      template:
+      ansible.builtin.template:
         src: ../monitoring/prometheus.yml.j2
         dest: /opt/monitoring/prometheus/prometheus.yml
+        mode: '0644'
       notify: Restart Prometheus
 
     - name: Copy Prometheus alert rules
-      copy:
+      ansible.builtin.copy:
         src: ../monitoring/prometheus/alerts.yml
         dest: /opt/monitoring/prometheus/alerts.yml
+        mode: '0644'
       notify: Restart Prometheus
 
+    # It holds the Discord webhook URL, so only the user Alertmanager
+    # runs as inside its container (nobody, 65534) can read it.
     - name: Template Alertmanager configuration
-      template:
+      ansible.builtin.template:
         src: ../monitoring/alertmanager/alertmanager.yml.j2
         dest: /opt/monitoring/alertmanager/alertmanager.yml
+        owner: '65534'
+        group: '65534'
+        mode: '0400'
       notify: Restart Alertmanager
 
+    - name: Copy blackbox exporter configuration
+      ansible.builtin.copy:
+        src: ../monitoring/blackbox/blackbox.yml
+        dest: /opt/monitoring/blackbox/blackbox.yml
+        mode: '0644'
+      notify: Restart Blackbox
+
     - name: Copy Grafana data source configuration
-      copy:
+      ansible.builtin.copy:
         src: ../monitoring/grafana/provisioning/datasources/prometheus.yml
         dest: /opt/monitoring/grafana/provisioning/datasources/prometheus.yml
+        mode: '0644'
       notify: Restart Grafana
 
     - name: Copy Grafana dashboard provider configuration
-      copy:
+      ansible.builtin.copy:
         src: ../monitoring/grafana/provisioning/dashboards/dashboards.yml
         dest: /opt/monitoring/grafana/provisioning/dashboards/dashboards.yml
+        mode: '0644'
       notify: Restart Grafana
 
     - name: Copy Grafana dashboards
-      copy:
+      ansible.builtin.copy:
         src: ../monitoring/grafana/dashboards/
         dest: /opt/monitoring/grafana/dashboards/
+        mode: '0644'
+        directory_mode: '0755'
 
     - name: Create Grafana environment file
-      copy:
+      ansible.builtin.copy:
         content: |
           GF_SECURITY_ADMIN_PASSWORD={{ lookup('env', 'GRAFANA_ADMIN_PASSWORD') }}
           GF_SERVER_ROOT_URL=https://grafana.utkarshtyagi.in
@@ -206,63 +177,67 @@
         mode: '0600'
 
     - name: Copy monitoring Compose file
-      copy:
+      ansible.builtin.copy:
         src: ../monitoring/compose.yaml
         dest: /opt/monitoring/compose.yaml
+        mode: '0644'
       notify: Reload Nginx
 
     - name: Copy Nginx HTTP configuration
-      copy:
+      ansible.builtin.copy:
         src: ../monitoring/nginx/http.conf
         dest: /opt/monitoring/nginx/http.conf
+        mode: '0644'
       notify: Reload Nginx
 
-    - name: Start Prometheus, Grafana, Alertmanager, and Nginx
-      command:
+    - name: Start Prometheus, Grafana, Alertmanager, blackbox exporter, and Nginx
+      ansible.builtin.command:
         cmd: docker compose up -d
         chdir: /opt/monitoring
+      register: monitoring_compose_up
+      changed_when: monitoring_compose_up.stderr is search('Created|Recreated|Started')
 
-    - name: Obtain Let's Encrypt certificate for Grafana
-      command:
-        cmd: >
-          certbot certonly
-          --webroot
-          -w /var/www/certbot
-          -d grafana.utkarshtyagi.in
-          --email utkarshtyagi9050@gmail.com
-          --agree-tos
-          --non-interactive
-        creates: /etc/letsencrypt/live/grafana.utkarshtyagi.in/fullchain.pem
-
-    - name: Install Certbot monitoring renewal hook
-      copy:
-        src: files/reload-monitoring-nginx.sh
-        dest: /etc/letsencrypt/renewal-hooks/deploy/reload-monitoring-nginx.sh
-        mode: '0755'
+    - name: Get the HTTPS certificate for Grafana
+      ansible.builtin.include_role:
+        name: certbot
+      vars:
+        certbot_domain: grafana.utkarshtyagi.in
+        certbot_reload_hook: "{{ playbook_dir }}/files/reload-monitoring-nginx.sh"
 
     - name: Copy Nginx HTTPS configuration
-      copy:
+      ansible.builtin.copy:
         src: ../monitoring/nginx/https.conf
         dest: /opt/monitoring/nginx/https.conf
+        mode: '0644'
       notify: Reload Nginx
 
   handlers:
     - name: Restart Prometheus
-      command:
+      ansible.builtin.command:
         cmd: docker compose restart prometheus
         chdir: /opt/monitoring
+      changed_when: true
 
     - name: Restart Alertmanager
-      command:
+      ansible.builtin.command:
         cmd: docker compose restart alertmanager
         chdir: /opt/monitoring
+      changed_when: true
 
     - name: Restart Grafana
-      command:
+      ansible.builtin.command:
         cmd: docker compose restart grafana
         chdir: /opt/monitoring
+      changed_when: true
+
+    - name: Restart Blackbox
+      ansible.builtin.command:
+        cmd: docker compose restart blackbox
+        chdir: /opt/monitoring
+      changed_when: true
 
     - name: Reload Nginx
-      command:
+      ansible.builtin.command:
         cmd: docker compose exec nginx nginx -s reload
         chdir: /opt/monitoring
+      changed_when: true

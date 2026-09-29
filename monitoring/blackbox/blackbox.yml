@@ -1,0 +1,11 @@
+# blackbox_exporter visits a URL the way a player would and reports
+# whether it worked. Prometheus asks it to check each public URL.
+modules:
+  https_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      fail_if_not_ssl: true
+      preferred_ip_protocol: ip4

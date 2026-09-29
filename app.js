@@ -4,14 +4,12 @@ const http = require('http')
 const path = require('path')
 const express = require('express')
 const mongoose = require('mongoose')
-const jwt = require('jsonwebtoken')
 const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
-const { GoogleGenerativeAI } = require('@google/generative-ai')
-const client = require('prom-client')
+const { Server } = require('socket.io')
 
-const Room = require('./models/Room')
-const GameResult = require('./models/GameResult')
+const metrics = require('./lib/metrics')
+const { createGame, recoverRooms } = require('./lib/game')
 
 // ───────────────────────────────────────────────────────────
 //  CONFIG
@@ -26,102 +24,8 @@ if (missingEnv.length > 0) {
 }
 
 const PORT = process.env.PORT
-const METRICS_PORT = 9101
+const METRICS_PORT = Number(process.env.METRICS_PORT) || 9101
 const JWT_SECRET = process.env.JWT_SECRET
-const QUESTION_MS = 15000
-const QUESTION_COUNT = 15
-const QUESTION_EXTRA = 5
-const MAX_FINISHED_ROOMS = 5
-
-const TOPICS = [
-  'world geography', 'space and astronomy', 'Indian history', 'world history',
-  'human body', 'animals', 'inventions', 'sports', 'movies', 'music',
-  'computers and the internet', 'mathematics', 'chemistry', 'physics',
-  'food and cooking', 'famous books', 'languages', 'mythology',
-  'oceans', 'famous buildings', 'money and economics', 'video games'
-]
-
-const TOPICS_PER_GAME = 5
-
-// ───────────────────────────────────────────────────────────
-//  PROMETHEUS METRICS
-// ───────────────────────────────────────────────────────────
-
-const register = new client.Registry()
-
-client.collectDefaultMetrics({
-  register
-})
-
-const httpRequestsTotal = new client.Counter({
-  name: 'http_requests_total',
-  help: 'Total number of HTTP requests',
-  labelNames: ['method', 'route', 'status']
-})
-
-const httpRequestDuration = new client.Histogram({
-  name: 'http_request_duration_seconds',
-  help: 'HTTP request duration in seconds',
-  labelNames: ['method', 'route', 'status'],
-  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5]
-})
-
-const activeWebSocketConnections = new client.Gauge({
-  name: 'active_websocket_connections',
-  help: 'Number of currently connected WebSocket clients'
-})
-
-const activeGameRooms = new client.Gauge({
-  name: 'active_game_rooms',
-  help: 'Number of currently active game rooms'
-})
-
-register.registerMetric(httpRequestsTotal)
-register.registerMetric(httpRequestDuration)
-register.registerMetric(activeWebSocketConnections)
-register.registerMetric(activeGameRooms)
-
-// ───────────────────────────────────────────────────────────
-//  DATABASE
-// ───────────────────────────────────────────────────────────
-
-mongoose.connect(process.env.MONGO_URI)
-  .then(async () => {
-    console.log('MongoDB connected')
-
-    const { modifiedCount } = await Room.updateMany(
-      { status: 'in-progress' },
-      { $set: { status: 'finished' } }
-    )
-
-    if (modifiedCount > 0) {
-      console.log(`Marked ${modifiedCount} dead in-progress room(s) as finished`)
-    }
-
-    await pruneFinishedRooms()
-  })
-  .catch(err => {
-    console.error('MongoDB connection failed:', err.message)
-    process.exit(1)
-  })
-
-async function pruneFinishedRooms() {
-  const keep = await Room.find({ status: 'finished' })
-    .sort({ _id: -1 })
-    .limit(MAX_FINISHED_ROOMS)
-    .select('_id')
-
-  const keepIds = keep.map(r => r._id)
-
-  const { deletedCount } = await Room.deleteMany({
-    status: 'finished',
-    _id: { $nin: keepIds }
-  })
-
-  if (deletedCount > 0) {
-    console.log(`Pruned ${deletedCount} old finished rooms`)
-  }
-}
 
 // ───────────────────────────────────────────────────────────
 //  APP
@@ -148,7 +52,8 @@ app.get('/healthz', (req, res) => {
 
   res.status(dbUp ? 200 : 503).json({
     status: dbUp ? 'ok' : 'degraded',
-    db: dbUp
+    db: dbUp,
+    version: process.env.APP_VERSION || 'dev'
   })
 })
 
@@ -157,7 +62,7 @@ app.get('/healthz', (req, res) => {
 // ───────────────────────────────────────────────────────────
 //
 // This middleware is BEFORE the rate limiter so 429 responses
-// are recorded as errors.
+// are counted too.
 //
 // It is AFTER /healthz so healthchecks are not counted.
 //
@@ -192,8 +97,8 @@ app.use((req, res, next) => {
       status: String(res.statusCode)
     }
 
-    httpRequestsTotal.inc(labels)
-    httpRequestDuration.observe(labels, durationSeconds)
+    metrics.httpRequestsTotal.inc(labels)
+    metrics.httpRequestDuration.observe(labels, durationSeconds)
   })
 
   next()
@@ -205,14 +110,24 @@ const limiter = rateLimit({
   message: { error: 'Too many requests' }
 })
 
-const authLimiter = rateLimit({
+// Only failed logins count. A group of friends on one Wi-Fi share an
+// IP address, and successful logins used to lock them out.
+const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  message: { error: 'Too many requests' }
+  skipSuccessfulRequests: true,
+  message: { message: 'Too many attempts. Try again in a few minutes.' }
+})
+
+// Enough for a whole party to sign up, few enough to stop bulk signups.
+const signupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  message: { message: 'Too many signups from this network. Try again later.' }
 })
 
 app.use(limiter)
-app.use(express.static('public'))
+app.use(express.static(path.join(__dirname, 'public')))
 
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.url}`)
@@ -223,262 +138,21 @@ const authRouter = require('./routes/auth.js')
 const roomRouter = require('./routes/rooms.js')
 const leaderRouter = require('./routes/leaderboard.js')
 
-app.use('/auth', authLimiter, authRouter)
+app.use('/auth/login', loginLimiter)
+app.use('/auth/signup', signupLimiter)
+app.use('/auth', authRouter)
 app.use('/rooms', roomRouter)
 app.use('/leaderboard', leaderRouter)
-
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'test.html'))
-})
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' })
 })
 
+// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error(err.stack || err)
   res.status(500).json({ error: 'Internal server error' })
 })
-
-// ───────────────────────────────────────────────────────────
-//  GAME STATE
-// ───────────────────────────────────────────────────────────
-
-const gameState = {}
-
-function scoresOf(state) {
-  const scores = {}
-
-  for (const [username, p] of Object.entries(state.players)) {
-    scores[username] = p.score
-  }
-
-  return scores
-}
-
-function updateActiveGameRoomsMetric() {
-  activeGameRooms.set(Object.keys(gameState).length)
-}
-
-// ───────────────────────────────────────────────────────────
-//  GAME FUNCTIONS
-// ───────────────────────────────────────────────────────────
-
-function sendQuestionTo(roomId, username) {
-  const state = gameState[roomId]
-
-  if (!state) return
-
-  const p = state.players[username]
-
-  if (!p || p.done) return
-
-  const question = state.questions[p.index]
-  const { correctOption, ...safeQuestion } = question
-
-  p.answered = false
-
-  io.to(p.socketId).emit('new-question', {
-    ...safeQuestion,
-    number: p.index + 1,
-    total: state.questions.length
-  })
-
-  clearTimeout(p.timer)
-
-  p.timer = setTimeout(() => {
-    advancePlayer(roomId, username).catch(err => {
-      console.error('question timer failed:', err.message)
-    })
-  }, QUESTION_MS)
-}
-
-async function advancePlayer(roomId, username) {
-  const state = gameState[roomId]
-
-  if (!state || state.finishing) return
-
-  const p = state.players[username]
-
-  if (!p || p.done) return
-
-  clearTimeout(p.timer)
-
-  p.index++
-
-  if (p.index < state.questions.length) {
-    sendQuestionTo(roomId, username)
-    return
-  }
-
-  p.done = true
-
-  io.to(p.socketId).emit('player-finished', {
-    scores: scoresOf(state)
-  })
-
-  await finishGameIfEveryoneDone(roomId)
-}
-
-async function finishGameIfEveryoneDone(roomId) {
-  const state = gameState[roomId]
-
-  if (!state || state.finishing) return
-
-  const allDone = Object.values(state.players).every(p => p.done)
-
-  if (!allDone) return
-
-  state.finishing = true
-
-  const room = await Room.findById(roomId)
-  const roomName = room ? room.name : 'unknown room'
-
-  const results = Object.entries(state.players)
-    .map(([username, p]) => ({
-      username,
-      userId: p.userId,
-      score: p.score,
-      roomName
-    }))
-    .filter(r => r.userId)
-
-  if (results.length > 0) {
-    await GameResult.insertMany(results)
-  }
-
-  if (room) {
-    room.status = 'finished'
-    await room.save()
-  }
-
-  io.to(roomId).emit('game-over', {
-    scores: scoresOf(state)
-  })
-
-  delete gameState[roomId]
-
-  updateActiveGameRoomsMetric()
-
-  pruneFinishedRooms().catch(err => {
-    console.error('pruning finished rooms failed:', err.message)
-  })
-}
-
-function clearAllTimers(state) {
-  for (const p of Object.values(state.players)) {
-    clearTimeout(p.timer)
-  }
-}
-
-// ───────────────────────────────────────────────────────────
-//  QUESTIONS (GEMINI)
-// ───────────────────────────────────────────────────────────
-
-function isValidQuestion(q) {
-  return Boolean(
-    q &&
-    typeof q.question === 'string' &&
-    Array.isArray(q.options) &&
-    q.options.length === 4 &&
-    q.options.every(o => typeof o === 'string') &&
-    Number.isInteger(q.correctOption) &&
-    q.correctOption >= 0 &&
-    q.correctOption <= 3
-  )
-}
-
-function pickTopics() {
-  const shuffled = [...TOPICS].sort(() => Math.random() - 0.5)
-  return shuffled.slice(0, TOPICS_PER_GAME)
-}
-
-function normalize(text) {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-async function fetchQuestions() {
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 1.0
-    }
-  })
-
-  const askFor = QUESTION_COUNT + QUESTION_EXTRA
-  const topics = pickTopics().join(', ')
-
-  const prompt = `Generate ${askFor} quiz questions.
-  Spread them across these topics: ${topics}.
-  Every question must be about a different fact. No two questions may ask the same thing.
-  Mix easy, medium and hard.
-  Put the correct answer at a random position among the options.
-  Return ONLY a JSON array, no markdown, no explanation, just the raw JSON.
-  Format: [
-    {
-      "question": "question text",
-      "options": ["option1", "option2", "option3", "option4"],
-      "correctOption": 0
-    }
-  ]
-  correctOption is the index of the correct answer in the options array.
-  Random seed: ${Date.now()}`
-
-  const result = await model.generateContent(prompt)
-  const raw = result.response.text().trim()
-
-  const cleaned = raw
-    .replace(/^```(?:json)?/i, '')
-    .replace(/```$/, '')
-    .trim()
-
-  let parsed
-
-  try {
-    parsed = JSON.parse(cleaned)
-  } catch {
-    throw new Error('Gemini returned unparseable JSON')
-  }
-
-  if (!Array.isArray(parsed)) {
-    throw new Error('Gemini did not return an array')
-  }
-
-  const seen = new Set()
-  const questions = []
-
-  for (const q of parsed) {
-    if (!isValidQuestion(q)) continue
-
-    const key = normalize(q.question)
-
-    if (seen.has(key)) continue
-
-    seen.add(key)
-    questions.push(q)
-
-    if (questions.length === QUESTION_COUNT) break
-  }
-
-  if (questions.length === 0) {
-    throw new Error('Gemini returned no usable questions')
-  }
-
-  if (questions.length < QUESTION_COUNT) {
-    console.warn(
-      `Gemini gave ${questions.length}/${QUESTION_COUNT} usable questions`
-    )
-  }
-
-  return questions
-}
 
 // ───────────────────────────────────────────────────────────
 //  SOCKETS
@@ -486,269 +160,25 @@ async function fetchQuestions() {
 
 const server = http.createServer(app)
 
-const { Server } = require('socket.io')
-const io = new Server(server)
+// Clients only ever send tiny messages. The default limit is 1 MB.
+const io = new Server(server, { maxHttpBufferSize: 16 * 1024 })
 
-io.on('connection', socket => {
-  let user
+const game = createGame(io, { jwtSecret: JWT_SECRET })
 
-  try {
-    user = jwt.verify(socket.handshake.auth?.token, JWT_SECRET)
-  } catch {
-    socket.disconnect(true)
-    return
-  }
+// ───────────────────────────────────────────────────────────
+//  DATABASE
+// ───────────────────────────────────────────────────────────
 
-  socket.data.user = user
-
-  activeWebSocketConnections.inc()
-
-  console.log('socket authenticated:', user.username)
-
-  let currentRoom = null
-
-  socket.on('join-room', async ({ roomId }) => {
-    try {
-      const room = await Room.findById(roomId)
-
-      if (!room) {
-        socket.emit('error', { message: 'Room not found' })
-        return
-      }
-
-      const isMember = room.players.some(
-        p => p.toString() === user._id
-      )
-
-      if (!isMember) {
-        socket.emit('error', {
-          message: 'You have not joined this room'
-        })
-        return
-      }
-
-      currentRoom = roomId
-
-      socket.join(currentRoom)
-
-      io.to(currentRoom).emit('player-joined', {
-        username: user.username
-      })
-    } catch (err) {
-      console.error('join-room failed:', err.message)
-
-      socket.emit('error', {
-        message: 'Could not join room'
-      })
-    }
+mongoose.connect(process.env.MONGO_URI)
+  .then(async () => {
+    console.log('MongoDB connected')
+    await recoverRooms()
+    game.startSweeper()
   })
-
-  socket.on('start-game', async () => {
-    try {
-      if (!currentRoom) {
-        socket.emit('error', {
-          message: 'Join a room first'
-        })
-        return
-      }
-
-      if (gameState[currentRoom]) {
-        socket.emit('error', {
-          message: 'Game already in progress'
-        })
-        return
-      }
-
-      const room = await Room.findById(currentRoom)
-
-      if (!room) {
-        socket.emit('error', {
-          message: 'Room not found'
-        })
-        return
-      }
-
-      if (room.host.toString() !== user._id) {
-        socket.emit('error', {
-          message: 'Only the host can start the game'
-        })
-        return
-      }
-
-      const questions = await fetchQuestions()
-
-      if (gameState[currentRoom]) return
-
-      const players = {}
-
-      const socketIds =
-        io.sockets.adapter.rooms.get(currentRoom) || new Set()
-
-      for (const id of socketIds) {
-        const s = io.sockets.sockets.get(id)
-
-        if (!s || !s.data.user) continue
-
-        players[s.data.user.username] = {
-          userId: s.data.user._id,
-          socketId: id,
-          index: 0,
-          score: 0,
-          answered: false,
-          done: false,
-          timer: null
-        }
-      }
-
-      if (Object.keys(players).length === 0) return
-
-      room.status = 'in-progress'
-
-      await room.save()
-
-      gameState[currentRoom] = {
-        questions,
-        finishing: false,
-        players
-      }
-
-      updateActiveGameRoomsMetric()
-
-      io.to(currentRoom).emit('scores-update', {
-        scores: scoresOf(gameState[currentRoom])
-      })
-
-      for (const username of Object.keys(players)) {
-        sendQuestionTo(currentRoom, username)
-      }
-    } catch (err) {
-      console.error('start-game failed:', err.message)
-
-      socket.emit('error', {
-        message: 'Could not start the game'
-      })
-    }
+  .catch(err => {
+    console.error('MongoDB connection failed:', err.message)
+    process.exit(1)
   })
-
-  socket.on('submit-answer', ({ answer }) => {
-    const state = gameState[currentRoom]
-
-    if (!state || state.finishing) return
-
-    const p = state.players[user.username]
-
-    if (!p || p.done || p.answered) return
-
-    p.answered = true
-
-    const question = state.questions[p.index]
-
-    if (!question) return
-
-    const correct =
-      Number(answer) === Number(question.correctOption)
-
-    if (correct) {
-      p.score += 10
-    }
-
-    const scores = scoresOf(state)
-
-    socket.emit('answer-result', {
-      correct,
-      correctOption: question.correctOption,
-      scores
-    })
-
-    io.to(currentRoom).emit('scores-update', { scores })
-  })
-
-  socket.on('next-question', ({ number } = {}) => {
-    const state = gameState[currentRoom]
-
-    if (!state || state.finishing) return
-
-    const p = state.players[user.username]
-
-    if (!p || p.done || !p.answered) return
-
-    if (Number(number) !== p.index + 1) return
-
-    advancePlayer(currentRoom, user.username).catch(err => {
-      console.error('next-question failed:', err.message)
-    })
-  })
-
-  socket.on('disconnect', () => {
-    activeWebSocketConnections.dec()
-
-    if (!currentRoom) return
-
-    const roomId = currentRoom
-
-    io.to(roomId).emit('player-left', {
-      socketId: socket.id
-    })
-
-    console.log(
-      `user disconnected from ${roomId}:`,
-      socket.id
-    )
-
-    const state = gameState[roomId]
-
-    if (!state) return
-
-    const room = io.sockets.adapter.rooms.get(roomId)
-    const roomSize = room ? room.size : 0
-
-    if (roomSize === 0) {
-      clearAllTimers(state)
-
-      delete gameState[roomId]
-
-      updateActiveGameRoomsMetric()
-
-      console.log(
-        `Room ${roomId} is empty. Game state cleared.`
-      )
-
-      Room.updateOne(
-        {
-          _id: roomId,
-          status: 'in-progress'
-        },
-        {
-          $set: { status: 'finished' }
-        }
-      )
-        .then(() => pruneFinishedRooms())
-        .catch(err =>
-          console.error(
-            'closing abandoned room failed:',
-            err.message
-          )
-        )
-
-      return
-    }
-
-    const p = state.players[user.username]
-
-    if (p && p.socketId === socket.id && !p.done) {
-      clearTimeout(p.timer)
-
-      p.done = true
-
-      finishGameIfEveryoneDone(roomId).catch(err => {
-        console.error(
-          'finishing game after disconnect failed:',
-          err.message
-        )
-      })
-    }
-  })
-})
 
 // ───────────────────────────────────────────────────────────
 //  METRICS SERVER
@@ -763,11 +193,11 @@ const metricsServer = http.createServer(async (req, res) => {
 
   try {
     res.statusCode = 200
-    res.setHeader('Content-Type', register.contentType)
+    res.setHeader('Content-Type', metrics.register.contentType)
 
-    const metrics = await register.metrics()
+    const body = await metrics.register.metrics()
 
-    res.end(metrics)
+    res.end(body)
   } catch (err) {
     console.error('metrics generation failed:', err)
 
@@ -781,9 +211,39 @@ metricsServer.listen(METRICS_PORT, () => {
 })
 
 // ───────────────────────────────────────────────────────────
-//  START
+//  START AND STOP
 // ───────────────────────────────────────────────────────────
 
 server.listen(PORT, () => {
   console.log(`Server on port ${PORT}`)
 })
+
+// Docker sends SIGTERM on every deploy and waits 10 seconds before
+// killing the process. Players are told first, running rooms are
+// closed, and connections are shut cleanly within that window.
+let shuttingDown = false
+
+async function shutdown(signal) {
+  if (shuttingDown) return
+  shuttingDown = true
+
+  console.log(`${signal} received, shutting down`)
+
+  setTimeout(() => process.exit(1), 8000).unref()
+
+  try {
+    await game.shutdown()
+    // Give the "server restarting" message time to reach players.
+    await new Promise(resolve => setTimeout(resolve, 500))
+    await new Promise(resolve => io.close(() => resolve()))
+    await new Promise(resolve => metricsServer.close(() => resolve()))
+    await mongoose.disconnect()
+  } catch (err) {
+    console.error('clean shutdown failed:', err.message)
+  }
+
+  process.exit(0)
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
