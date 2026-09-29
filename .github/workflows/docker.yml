@@ -59,6 +59,7 @@ jobs:
         working-directory: ansible
         env:
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: ansible-playbook -i inventory.ini playbook.yml
 
       - name: Smoke test

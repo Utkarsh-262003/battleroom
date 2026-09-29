@@ -99,6 +99,12 @@
           - lookup('env', 'GRAFANA_ADMIN_PASSWORD') | length > 0
         fail_msg: "GRAFANA_ADMIN_PASSWORD is not set. Run this playbook through GitHub Actions or provide the environment variable."
 
+    - name: Check Discord webhook is provided
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'DISCORD_WEBHOOK_URL') | length > 0
+        fail_msg: "DISCORD_WEBHOOK_URL is not set. Run this playbook through GitHub Actions or provide the environment variable."
+
     - name: Install Docker, Compose, and Certbot
       apt:
         name:
@@ -133,6 +139,11 @@
         path: /opt/monitoring/prometheus
         state: directory
 
+    - name: Create Alertmanager configuration directory
+      file:
+        path: /opt/monitoring/alertmanager
+        state: directory
+
     - name: Create Grafana provisioning directory
       file:
         path: /opt/monitoring/grafana/provisioning/datasources
@@ -143,6 +154,18 @@
         src: ../monitoring/prometheus.yml.j2
         dest: /opt/monitoring/prometheus/prometheus.yml
       notify: Restart Prometheus
+
+    - name: Copy Prometheus alert rules
+      copy:
+        src: ../monitoring/prometheus/alerts.yml
+        dest: /opt/monitoring/prometheus/alerts.yml
+      notify: Restart Prometheus
+
+    - name: Template Alertmanager configuration
+      template:
+        src: ../monitoring/alertmanager/alertmanager.yml.j2
+        dest: /opt/monitoring/alertmanager/alertmanager.yml
+      notify: Restart Alertmanager
 
     - name: Copy Grafana data source configuration
       copy:
@@ -169,7 +192,7 @@
         dest: /opt/monitoring/nginx/http.conf
       notify: Reload Nginx
 
-    - name: Start Prometheus, Grafana, and Nginx
+    - name: Start Prometheus, Grafana, Alertmanager, and Nginx
       command:
         cmd: docker compose up -d
         chdir: /opt/monitoring
@@ -202,6 +225,11 @@
     - name: Restart Prometheus
       command:
         cmd: docker compose restart prometheus
+        chdir: /opt/monitoring
+
+    - name: Restart Alertmanager
+      command:
+        cmd: docker compose restart alertmanager
         chdir: /opt/monitoring
 
     - name: Restart Grafana

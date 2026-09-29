@@ -8,6 +8,12 @@ services:
       - ./prometheus:/etc/prometheus:ro
       - prometheus-data:/prometheus
 
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro
+
   grafana:
     image: grafana/grafana:12.2.0
     ports:
