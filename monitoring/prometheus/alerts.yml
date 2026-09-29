@@ -1,7 +1,6 @@
 groups:
   - name: battleroom
     rules:
-
       - alert: TargetDown
         expr: up == 0
         for: 1m
@@ -10,7 +9,7 @@ groups:
         annotations:
           summary: "{{ $labels.job }} on {{ $labels.instance }} is down"
 
-      - alert: AppBoxDiskAlmostFull
+      - alert: DiskAlmostFull
         expr: (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 > 85
         for: 5m
         labels:
@@ -18,7 +17,7 @@ groups:
         annotations:
           summary: "Disk usage on {{ $labels.instance }} is above 85%"
 
-      - alert: AppBoxMemoryAlmostFull
+      - alert: MemoryAlmostFull
         expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90
         for: 5m
         labels:

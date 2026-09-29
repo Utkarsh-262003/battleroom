@@ -62,5 +62,8 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: ansible-playbook -i inventory.ini playbook.yml
 
-      - name: Smoke test
+      - name: Smoke test app
         run: curl --fail --retry 10 --retry-delay 5 --retry-all-errors https://battleroom.utkarshtyagi.in/healthz
+
+      - name: Smoke test Grafana
+        run: curl --fail --retry 10 --retry-delay 5 --retry-all-errors https://grafana.utkarshtyagi.in/api/health

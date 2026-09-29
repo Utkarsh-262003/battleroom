@@ -10,6 +10,7 @@
           - certbot
           - prometheus-node-exporter
         update_cache: true
+        cache_valid_time: 3600
 
     - name: Make sure Docker is running
       service:
@@ -105,13 +106,15 @@
           - lookup('env', 'DISCORD_WEBHOOK_URL') | length > 0
         fail_msg: "DISCORD_WEBHOOK_URL is not set. Run this playbook through GitHub Actions or provide the environment variable."
 
-    - name: Install Docker, Compose, and Certbot
+    - name: Install Docker, Compose, Certbot, and Node Exporter
       apt:
         name:
           - docker.io
           - docker-compose-v2
           - certbot
+          - prometheus-node-exporter
         update_cache: true
+        cache_valid_time: 3600
 
     - name: Make sure Docker is running
       service:
@@ -144,9 +147,19 @@
         path: /opt/monitoring/alertmanager
         state: directory
 
-    - name: Create Grafana provisioning directory
+    - name: Create Grafana data source provisioning directory
       file:
         path: /opt/monitoring/grafana/provisioning/datasources
+        state: directory
+
+    - name: Create Grafana dashboard provisioning directory
+      file:
+        path: /opt/monitoring/grafana/provisioning/dashboards
+        state: directory
+
+    - name: Create Grafana dashboards directory
+      file:
+        path: /opt/monitoring/grafana/dashboards
         state: directory
 
     - name: Copy Prometheus configuration
@@ -173,6 +186,17 @@
         dest: /opt/monitoring/grafana/provisioning/datasources/prometheus.yml
       notify: Restart Grafana
 
+    - name: Copy Grafana dashboard provider configuration
+      copy:
+        src: ../monitoring/grafana/provisioning/dashboards/dashboards.yml
+        dest: /opt/monitoring/grafana/provisioning/dashboards/dashboards.yml
+      notify: Restart Grafana
+
+    - name: Copy Grafana dashboards
+      copy:
+        src: ../monitoring/grafana/dashboards/
+        dest: /opt/monitoring/grafana/dashboards/
+
     - name: Create Grafana environment file
       copy:
         content: |
@@ -181,10 +205,11 @@
         dest: /opt/monitoring/.env
         mode: '0600'
 
-    - name: Copy Prometheus and Grafana Compose file
+    - name: Copy monitoring Compose file
       copy:
         src: ../monitoring/compose.yaml
         dest: /opt/monitoring/compose.yaml
+      notify: Reload Nginx
 
     - name: Copy Nginx HTTP configuration
       copy:

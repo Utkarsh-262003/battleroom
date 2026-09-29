@@ -13,6 +13,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
 
   grafana:
     image: grafana/grafana:12.2.0
@@ -24,6 +25,7 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
 
   nginx:
     image: nginx:1.29.1-alpine
@@ -40,4 +42,5 @@ services:
 
 volumes:
   prometheus-data:
+  alertmanager-data:
   grafana-data:
