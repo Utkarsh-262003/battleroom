@@ -19,6 +19,19 @@ services:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
 
+  nginx:
+    image: nginx:1.29.1-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    depends_on:
+      - grafana
+    volumes:
+      - ./nginx:/etc/nginx/conf.d:ro
+      - /var/www/certbot:/var/www/certbot:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+
 volumes:
   prometheus-data:
   grafana-data:
