@@ -150,6 +150,14 @@ resource "aws_instance" "battleroom" {
 
   key_name = "battleroom-key"
 
+  # 12 GB instead of the 8 GB default, so there is room for Docker
+  # images, Prometheus data and a swap file. Resized in place; Ansible
+  # then grows the partition to match on the next deploy.
+  root_block_device {
+    volume_size = 12
+    volume_type = "gp3"
+  }
+
   # IMDSv2 only. Blocks the classic trick of making a server fetch its
   # own cloud credentials for an attacker. Applied in place, no rebuild.
   metadata_options {
@@ -186,6 +194,14 @@ resource "aws_instance" "monitoring" {
   ]
 
   key_name = "battleroom-key"
+
+  # 12 GB instead of the 8 GB default, so there is room for Docker
+  # images, Prometheus data and a swap file. Resized in place; Ansible
+  # then grows the partition to match on the next deploy.
+  root_block_device {
+    volume_size = 12
+    volume_type = "gp3"
+  }
 
   # IMDSv2 only. Blocks the classic trick of making a server fetch its
   # own cloud credentials for an attacker. Applied in place, no rebuild.

@@ -122,7 +122,7 @@ A deploy stops the old container with SIGTERM. The app tells players in a runnin
 |---|---|
 | VPC `10.0.0.0/16`, subnet `10.0.1.0/24` | Private network for both boxes |
 | Internet gateway and route table | Internet access |
-| 2 × EC2 `t3.micro` (Ubuntu) | App box and monitoring box |
+| 2 × EC2 `t3.micro` (Ubuntu), 12 GB gp3 disk each | App box and monitoring box |
 | 2 × Elastic IP | Fixed public IPs that survive box replacement, so DNS never breaks |
 | 2 × security group | One per box (below) |
 
@@ -158,7 +158,7 @@ The Elastic IP stays, the new box gets set up by the pipeline, and the site come
 
 `ansible/playbook.yml` sets up both boxes from a bare Ubuntu install. It has two plays, one per box, and two roles they share:
 
-- **`base`**: installs Docker, Compose, certbot and node_exporter, and adds a 1 GB swap file (skipped if the disk has less than 3 GB free).
+- **`base`**: installs Docker, Compose, certbot and node_exporter. It grows the root partition to fill the disk (needed after the disk is made bigger in Terraform), prints the free disk and swap in every deploy log, and adds a 1 GB swap file (skipped if the disk has less than 3 GB free).
 - **`certbot`**: gets a Let's Encrypt certificate for a domain and installs the hook that reloads nginx after each renewal.
 
 **App box:** copies the Compose file, nginx config and app secrets; starts the containers with the exact image tag the pipeline passes in; cleans up old images; gets the HTTPS certificate.
@@ -173,6 +173,7 @@ A few details that matter:
 - **Fails loudly.** The monitoring play asserts that its required secrets are present before touching anything.
 - **Secret files are locked down.** The app's `.env` and Grafana's `.env` are readable by root only. The Alertmanager config holds the Discord webhook URL, so only the user Alertmanager runs as can read it.
 - **Linted.** `ansible-lint` passes at its strictest (`production`) profile, and CI checks it on every push.
+- **Pinned and future-proof.** The pipeline runs a pinned `ansible-core` (2.21.4). Facts are read as `ansible_facts['...']`, and the old top-level fact variables are switched off in `ansible.cfg`, so the playbook will not break when ansible-core 2.24 removes them.
 
 ---
 
@@ -226,7 +227,7 @@ GitHub Actions, in `.github/workflows/docker.yml`:
 1. **`test`:** ESLint, then the test suite (below). Also runs on pull requests.
 2. **`infra-lint`:** `ansible-lint`, `terraform fmt -check` and `terraform validate`. Also runs on pull requests.
 3. **`docker`** (waits for both): builds the image with layer caching and pushes it to Docker Hub.
-4. **`deploy`** (waits for `docker`): installs Ansible, writes the SSH key and environment file from secrets, runs the playbook against both boxes with `IMAGE_TAG` set to the commit SHA, then runs the smoke tests.
+4. **`deploy`** (waits for `docker`): installs the pinned `ansible-core`, writes the SSH key and environment file from secrets, runs the playbook against both boxes with `IMAGE_TAG` set to the commit SHA, then runs the smoke tests.
 
 Nothing is built or deployed unless the tests pass.
 
@@ -463,7 +464,7 @@ The first `npm test` downloads a MongoDB binary, so it takes a little longer.
   ```
 
   From then on, the deploy refuses to connect if a server's identity changes. After rebuilding a box with `terraform apply -replace`, run the command again for its IP.
-- **IMDSv2 needs one `terraform apply`.** Terraform is run by hand, so the new setting reaches AWS the next time you run `terraform apply` in `terraform/`. It changes the instances in place; nothing is rebuilt.
+- **One `terraform apply` is waiting.** IMDSv2 and the bigger 12 GB disks are in the Terraform code, but Terraform is run by hand, so they reach AWS the next time you run `terraform apply` in `terraform/`. Both change the instances in place. Before typing `yes`, check the plan says `2 to change, 0 to destroy`. Then run the pipeline once (Actions → Build and Deploy → Run workflow): Ansible grows the partitions to the new size and adds the swap file.
 - **In-memory game state.** A restart ends any game in progress. Players are told, and the room is closed, but the round is lost. Keeping game state in Redis would let games survive a deploy.
 - **Terraform state is local.** Moving it to S3 with locking would let the pipeline and others use it safely.
 - **Root disks are not encrypted.** Turning on EBS encryption for an existing instance means replacing it, so it is best done at the next planned rebuild.

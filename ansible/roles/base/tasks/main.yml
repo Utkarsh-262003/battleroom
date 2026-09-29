@@ -1,10 +1,11 @@
-- name: Install Docker, Compose, Certbot, and Node Exporter
+- name: Install Docker, Compose, Certbot, Node Exporter, and growpart
   ansible.builtin.apt:
     name:
       - docker.io
       - docker-compose-v2
       - certbot
       - prometheus-node-exporter
+      - cloud-guest-utils
     update_cache: true
     cache_valid_time: 3600
 
@@ -20,6 +21,39 @@
     state: directory
     mode: '0755'
 
+# After `terraform apply` makes the EBS volume bigger, the partition and
+# filesystem keep their old size. This grows them to fill the disk while
+# the server runs, and does nothing when they already fill it. A problem
+# here is reported but never stops a deploy.
+- name: Grow the root partition to fill the disk
+  ansible.builtin.script: grow-root.sh /
+  register: base_grow_root
+  changed_when: "'grown' in base_grow_root.stdout"
+  failed_when: false
+
+- name: Warn if the root partition could not be grown
+  ansible.builtin.debug:
+    msg: "Could not grow the root partition: {{ base_grow_root.stderr | default('') | trim }}"
+  when: base_grow_root.rc | default(0) != 0
+
+# The facts were gathered before the step above, so read the disk
+# again: the swap step below needs the size it is now.
+- name: Refresh disk facts
+  ansible.builtin.setup:
+    gather_subset:
+      - hardware
+
+- name: Look up the root disk
+  ansible.builtin.set_fact:
+    base_root_mount: "{{ ansible_facts['mounts'] | selectattr('mount', 'equalto', '/') | first }}"
+
+- name: Report disk and swap
+  ansible.builtin.debug:
+    msg: >-
+      Root disk: {{ (base_root_mount.size_available / 1024**3) | round(1) }} GB free
+      of {{ (base_root_mount.size_total / 1024**3) | round(1) }} GB.
+      Swap: {{ ansible_facts['swaptotal_mb'] }} MB.
+
 - name: Check for a swap file
   ansible.builtin.stat:
     path: /swapfile
@@ -31,17 +65,14 @@
 - name: Create a 1 GB swap file
   when:
     - not base_swapfile.stat.exists
-    - ansible_swaptotal_mb == 0
-    - (ansible_mounts | selectattr('mount', 'equalto', '/') | first).size_available > 3 * 1024 * 1024 * 1024
+    - ansible_facts['swaptotal_mb'] == 0
+    - base_root_mount.size_available > 3 * 1024 * 1024 * 1024
   block:
+    # umask 077 makes the file readable by root only from the moment
+    # it exists.
     - name: Allocate the swap file
-      ansible.builtin.command: fallocate -l 1G /swapfile
+      ansible.builtin.shell: umask 077 && fallocate -l 1G /swapfile
       changed_when: true
-
-    - name: Make the swap file readable by root only
-      ansible.builtin.file:
-        path: /swapfile
-        mode: '0600'
 
     - name: Format the swap file
       ansible.builtin.command: mkswap /swapfile
