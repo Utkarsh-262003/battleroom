@@ -137,13 +137,15 @@ jobs:
           docker manifest inspect "utkarsh694208607/battleroom:$IMAGE_TAG" > /dev/null \
             || { echo "::error::Image tag $IMAGE_TAG does not exist on Docker Hub"; exit 1; }
 
-      # The runner comes with its own ansible-core, and a plain `pipx
-      # install` leaves that one in place. --force makes the pinned
-      # version the one that actually runs.
+      # The runner comes with its own ansible-core in a system folder the
+      # job cannot change, so `pipx install` quietly kept using it. The
+      # pinned version goes into a venv of its own, first on the PATH.
       - name: Install Ansible
         run: |
-          pipx install --force ansible-core==2.21.4
-          ansible-playbook --version
+          python3 -m venv "$RUNNER_TEMP/ansible"
+          "$RUNNER_TEMP/ansible/bin/pip" install --quiet ansible-core==2.21.4
+          "$RUNNER_TEMP/ansible/bin/ansible-playbook" --version
+          echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
 
       - name: Write SSH key
         env:
